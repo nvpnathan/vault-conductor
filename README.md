@@ -36,7 +36,7 @@ bash setup.sh
 
 Setup installs Python dependencies and wires cmux notification hooks into Claude Code.
 
-**Configure your vault path** — edit the top of `main.py` to point at your Obsidian vault:
+**Configure your vault path** — edit the top of `vault_conductor/main.py` to point at your Obsidian vault:
 
 ```python
 VAULT = Path("~/path/to/your/vault").expanduser()
@@ -101,6 +101,7 @@ vault-conductor/
 │   ├── main.py      # Kanban watcher + workspace spawner
 │   └── dashboard.py # Live agent dashboard
 ├── pyproject.toml
+├── uv.lock
 └── setup.sh         # One-time setup script
 ```
 

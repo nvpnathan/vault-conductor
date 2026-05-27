@@ -2,9 +2,8 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VAULT="$REPO/Agent Control Room"
 
-echo "=== Agent Control Room Setup ==="
+echo "=== vault-conductor Setup ==="
 echo ""
 
 # Python deps via uv
@@ -31,12 +30,13 @@ echo ""
 echo "=== Setup complete ==="
 echo ""
 echo "Next steps:"
-echo "  1. Open the vault in Obsidian:"
-echo "       open '$VAULT'"
+echo "  1. Set your vault path in vault_conductor/main.py (VAULT variable)."
 echo ""
-echo "  2. Start the orchestrator (watches kanban → spawns agents):"
+echo "  2. Open your vault in Obsidian."
+echo ""
+echo "  3. Start the orchestrator (watches kanban → spawns agents):"
 echo "       uv run orchestrator"
 echo ""
-echo "  3. Drag a project card to 'In Progress' on the kanban board."
+echo "  4. Drag a project card to 'In Progress' on the kanban board."
 echo "     The orchestrator will spawn a cmux workspace with Claude Code."
 echo ""
