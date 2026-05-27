@@ -32,7 +32,7 @@ from .kanban import (
     update_card_line,
 )
 from .markdown import write_file_atomic
-from .repos import RepoEntry, find_repo, load_repo_registry, registry_path, scan_repos
+from .repos import RepoEntry, find_repo, load_repo_registry, registry_path, scan_repos, sync_project_notes
 from .run_notes import append_run_followup, create_run_note, update_run_frontmatter
 from .sessions import read_sessions, remove_session, transcript_hash, upsert_session
 from .tasks import (
@@ -156,6 +156,7 @@ def new_task_command(
     board = read_board(config)
     add_card(board, status_to_column(config, task.frontmatter.status), build_card_line(task.frontmatter))
     write_board(config, board)
+    sync_project_notes(config)
     return {"id": task.frontmatter.id, "path": task.path}
 
 
@@ -211,6 +212,7 @@ def mark_task(config: Config, task_id: str, status: str, *, human: bool = False)
         cmux.set_status(session["workspace_ref"], status)
         if session.get("run_id") and status in {"review-diff", "failed", "parked", "pr-opened", "done"}:
             update_run_frontmatter(config, session["run_id"], {"status": status, "ended": now_iso()})
+    sync_project_notes(config)
 
 
 def move_command(config: Config, task_id: str, column_or_status: str, *, human: bool = False) -> None:
@@ -251,6 +253,7 @@ def sync_command(config: Config, *, board_wins: bool = False) -> dict[str, int]:
         )
         move_card(board, task.frontmatter.id, status_to_column(config, status), status=status, checked=status == "done", card_line=line)
     write_board(config, board)
+    sync_project_notes(config)
     return {"synced": len(tasks)}
 
 

@@ -8,8 +8,8 @@ from typing import Any
 import yaml
 
 from .config import Config
-from .markdown import stringify_markdown, write_file_atomic
-from .tasks import now_iso
+from .markdown import parse_markdown, replace_section, stringify_markdown, write_file_atomic
+from .tasks import TaskNote, now_iso, read_all_task_notes
 
 
 @dataclass
@@ -84,8 +84,7 @@ def scan_repos(config: Config) -> dict[str, Any]:
     repos.sort(key=lambda repo: repo.name)
     registry = {"version": 1, "repos": [repo.to_mapping() for repo in repos]}
     write_repo_registry(config, registry)
-    for repo in repos:
-        upsert_project_note(config, repo)
+    sync_project_notes(config, repos)
     return registry
 
 
@@ -123,8 +122,21 @@ def read_repo_config(repo_path: Path) -> dict[str, Any]:
     return {}
 
 
+def sync_project_notes(config: Config, repos: list[RepoEntry] | None = None) -> dict[str, int]:
+    if repos is None:
+        repos = [RepoEntry.from_mapping(item) for item in load_repo_registry(config).get("repos", [])]
+    for repo in repos:
+        upsert_project_note(config, repo)
+    return {"synced": len(repos)}
+
+
 def upsert_project_note(config: Config, repo: RepoEntry) -> None:
     path = config.projects_dir / f"{repo.name}.md"
+    existing_frontmatter: dict[str, Any] = {}
+    existing_body = ""
+    if path.exists():
+        existing_frontmatter, existing_body = parse_markdown(path.read_text(encoding="utf-8"))
+    now = now_iso()
     frontmatter = {
         "type": "project",
         "repo": repo.name,
@@ -132,13 +144,155 @@ def upsert_project_note(config: Config, repo: RepoEntry) -> None:
         "default_branch": repo.default_branch,
         "default_agent": repo.default_agent,
         "status": repo.status,
-        "created": now_iso(),
-        "updated": now_iso(),
+        "created": scalar_string(existing_frontmatter.get("created") or now),
+        "updated": now,
     }
-    if path.exists():
-        return
-    body = f"# {repo.name}\n\nRepo path: `{repo.path}`\n"
+    body = render_project_note_body(config, repo, existing_body)
     write_file_atomic(path, stringify_markdown(frontmatter, body))
+
+
+def render_project_note_body(config: Config, repo: RepoEntry, existing_body: str = "") -> str:
+    body = existing_body or default_project_note_body(repo)
+    body = replace_section(body, "Repo", f"{repo.name} is registered at `{display_path(repo.path)}`.")
+    body = replace_section(body, "Common commands", existing_or_default_section(existing_body, "Common commands", commands_body(repo)))
+    body = replace_section(body, "Agent rules", existing_or_default_section(existing_body, "Agent rules", instructions_body(repo)))
+    body = replace_section(body, "Active tasks", active_tasks_table(config, repo.name))
+    body = replace_section(body, "Completed tasks", completed_tasks_table(config, repo.name))
+    return body
+
+
+def default_project_note_body(repo: RepoEntry) -> str:
+    return f"""# Repo
+
+{repo.name} is registered at `{display_path(repo.path)}`.
+
+# Common commands
+
+{commands_body(repo)}
+
+# Agent rules
+
+{instructions_body(repo)}
+
+# Active tasks
+
+No active tasks.
+
+# Completed tasks
+
+No completed tasks.
+"""
+
+
+def existing_or_default_section(existing_body: str, heading: str, default: str) -> str:
+    existing = section_content(existing_body, heading)
+    return existing if existing else default
+
+
+def section_content(body: str, heading: str) -> str:
+    lines = body.replace("\r\n", "\n").split("\n")
+    heading_line = f"# {heading}"
+    try:
+        start = next(index for index, line in enumerate(lines) if line.strip() == heading_line)
+    except StopIteration:
+        return ""
+    end = len(lines)
+    for index in range(start + 1, len(lines)):
+        if lines[index].startswith("# "):
+            end = index
+            break
+    return "\n".join(lines[start + 1 : end]).strip()
+
+
+def commands_body(repo: RepoEntry) -> str:
+    return "\n".join(f"- {name}: `{command}`" for name, command in sorted(repo.commands.items()))
+
+
+def instructions_body(repo: RepoEntry) -> str:
+    return "\n".join(f"- {instruction}" for instruction in (repo.instructions or []))
+
+
+def active_tasks_table(config: Config, repo_name: str) -> str:
+    tasks = [task for task in read_all_task_notes(config) if task.frontmatter.repo == repo_name and task.frontmatter.status != "done"]
+    tasks.sort(key=lambda task: task.frontmatter.updated, reverse=True)
+    tasks.sort(key=lambda task: priority_rank(task.frontmatter.priority))
+    lines = ["| Task | Status | Priority | Agent | Updated |", "| --- | --- | --- | --- | --- |"]
+    if not tasks:
+        lines.append("| No active tasks. |  |  |  | |")
+    else:
+        for task in tasks:
+            frontmatter = task.frontmatter
+            lines.append(
+                "| "
+                + " | ".join(
+                    [
+                        task_link(task),
+                        table_cell(frontmatter.status),
+                        table_cell(frontmatter.priority),
+                        table_cell(frontmatter.agent),
+                        table_cell(frontmatter.updated),
+                    ]
+                )
+                + " |"
+            )
+    return "\n".join(lines)
+
+
+def completed_tasks_table(config: Config, repo_name: str) -> str:
+    tasks = [task for task in read_all_task_notes(config) if task.frontmatter.repo == repo_name and task.frontmatter.status == "done"]
+    tasks.sort(key=lambda task: task.frontmatter.completed or task.frontmatter.updated, reverse=True)
+    lines = ["| Task | Completed | Agent | Tests |", "| --- | --- | --- | --- |"]
+    if not tasks:
+        lines.append("| No completed tasks. |  |  | |")
+    else:
+        for task in tasks:
+            frontmatter = task.frontmatter
+            lines.append(
+                "| "
+                + " | ".join(
+                    [
+                        task_link(task),
+                        table_cell(frontmatter.completed or frontmatter.updated),
+                        table_cell(frontmatter.agent),
+                        table_cell(frontmatter.last_test_status or ""),
+                    ]
+                )
+                + " |"
+            )
+    return "\n".join(lines)
+
+
+def task_link(task: TaskNote) -> str:
+    link_path = task.path.removesuffix(".md")
+    return table_cell(f"[[{link_path}]]")
+
+
+def table_cell(value: str | None) -> str:
+    return str(value or "").replace("|", "\\|").replace("\n", " ")
+
+
+def priority_rank(priority: str | None) -> int:
+    if priority and len(priority) > 1 and priority[0].upper() == "P" and priority[1:].isdigit():
+        return int(priority[1:])
+    return 99
+
+
+def display_path(value: str) -> str:
+    path = Path(value).expanduser()
+    try:
+        return f"~/{path.resolve().relative_to(Path.home()).as_posix()}"
+    except ValueError:
+        return str(path)
+
+
+def scalar_string(value: Any) -> str:
+    isoformat = getattr(value, "isoformat", None)
+    if callable(isoformat):
+        return str(isoformat())
+    text = str(value)
+    if len(text) > 10 and text[4] == "-" and text[7] == "-" and text[10] == " ":
+        return f"{text[:10]}T{text[11:]}"
+    return text
 
 
 def is_git_repo(path: Path | str) -> bool:

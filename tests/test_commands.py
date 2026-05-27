@@ -77,6 +77,65 @@ def test_new_mark_and_sync_treat_task_note_as_authoritative(config, fake_git_rep
     assert read_task_note(config, created["id"]).frontmatter.status == "running"
 
 
+def test_sync_migrates_project_notes_to_readable_task_tables(config, fake_git_repo):
+    init_command(config, open_obsidian=False)
+    write_registry(config, fake_git_repo)
+    project = config.projects_dir / "demo.md"
+    project.write_text(
+        """---
+type: project
+repo: demo
+repo_path: ~/repos/demo
+default_branch: main
+default_agent: codex
+status: active
+created: 2026-05-27T00:00:00Z
+updated: 2026-05-27T00:00:00Z
+---
+# Repo
+
+demo is registered at `~/repos/demo`.
+
+# Common commands
+
+- test: `custom test`
+
+# Agent rules
+
+- Keep changes small.
+
+# Active tasks
+
+old active list
+
+# Completed tasks
+
+old completed list
+""",
+        encoding="utf-8",
+    )
+    created = new_task_command(config, repo="demo", title="Active item", status="ready")
+
+    sync_command(config)
+
+    text = project.read_text(encoding="utf-8")
+    assert "- test: `custom test`" in text
+    assert "- Keep changes small." in text
+    assert "old active list" not in text
+    assert "old completed list" not in text
+    assert "```dataview" not in text
+    assert "| Task | Status | Priority | Agent | Updated |" in text
+    assert f"[[20 Agent Tasks/{created['id']} Active item]]" in text
+    assert "| No completed tasks. |  |  | |" in text
+
+    mark_task(config, created["id"], "done", human=True)
+
+    text = project.read_text(encoding="utf-8")
+    assert "| No active tasks. |  |  |  |" in text
+    assert "| Task | Completed | Agent | Tests |" in text
+    assert f"[[20 Agent Tasks/{created['id']} Active item]]" in text
+
+
 def test_start_creates_cmux_session_run_prompt_and_sends_prompt_file_instruction(config, fake_git_repo, fake_cmux):
     init_command(config, open_obsidian=False)
     write_registry(config, fake_git_repo)
