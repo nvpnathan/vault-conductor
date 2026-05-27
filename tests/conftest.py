@@ -33,7 +33,7 @@ def fake_cmux(tmp_path, monkeypatch):
     bin_dir.mkdir()
     calls_file = tmp_path / "cmux-calls.jsonl"
     workspaces_file = tmp_path / "cmux-workspaces.json"
-    workspaces_file.write_text(json.dumps({"workspaces": []}), encoding="utf-8")
+    workspaces_file.write_text(json.dumps({"workspaces": [], "read_screen_count": 0}), encoding="utf-8")
     script = bin_dir / "cmux"
     script.write_text(
         """#!/usr/bin/env python3
@@ -71,14 +71,55 @@ if cmd == "ping":
 elif cmd == "new-workspace":
     data = read_state()
     ref = f"workspace:{len(data['workspaces']) + 1}"
-    workspace = {"ref": ref, "id": ref, "name": "workspace"}
+    pane_ref = f"pane:{len(data['workspaces']) + 1}"
+    surface_ref = f"surface:{len(data['workspaces']) + 1}"
+    workspace = {
+        "ref": ref,
+        "id": ref,
+        "name": "workspace",
+        "panes": [
+            {
+                "ref": pane_ref,
+                "surface_refs": [surface_ref],
+                "surfaces": [
+                    {
+                        "ref": surface_ref,
+                        "type": "terminal",
+                        "selected": True,
+                    }
+                ],
+            }
+        ],
+    }
     data["workspaces"].append(workspace)
     write_state(data)
     emit({"workspace": workspace}, f"OK {ref}")
 elif cmd == "list-workspaces":
     emit(read_state())
+elif cmd == "list-panes":
+    data = read_state()
+    workspace_ref = args[args.index("--workspace") + 1] if "--workspace" in args else "workspace:1"
+    workspace = next((item for item in data["workspaces"] if item["ref"] == workspace_ref), None)
+    emit({"workspace_ref": workspace_ref, "panes": (workspace or {}).get("panes", [])})
+elif cmd == "list-pane-surfaces":
+    data = read_state()
+    workspace_ref = args[args.index("--workspace") + 1] if "--workspace" in args else "workspace:1"
+    pane_ref = args[args.index("--pane") + 1] if "--pane" in args else None
+    workspace = next((item for item in data["workspaces"] if item["ref"] == workspace_ref), None)
+    pane = next((item for item in (workspace or {}).get("panes", []) if item["ref"] == pane_ref), None)
+    emit({"workspace_ref": workspace_ref, "pane_ref": pane_ref, "surfaces": (pane or {}).get("surfaces", [])})
 elif cmd == "read-screen":
-    emit({"text": os.environ.get("FAKE_CMUX_SCREEN", "")}, os.environ.get("FAKE_CMUX_SCREEN", ""))
+    sequence = os.environ.get("FAKE_CMUX_SCREEN_SEQUENCE")
+    if sequence is not None:
+        data = read_state()
+        parts = sequence.split("\\f")
+        index = min(data.get("read_screen_count", 0), len(parts) - 1)
+        text = parts[index]
+        data["read_screen_count"] = data.get("read_screen_count", 0) + 1
+        write_state(data)
+    else:
+        text = os.environ.get("FAKE_CMUX_SCREEN", "OpenAI Codex\\nFind and fix a bug in @filename")
+    emit({"text": text}, text)
 elif cmd == "events":
     sys.exit(0)
 elif cmd in {"markdown", "send", "send-key", "close-workspace", "set-status", "notify"}:

@@ -204,6 +204,13 @@ def mark_task(config: Config, task_id: str, status: str, *, human: bool = False)
     )
     move_card(board, task_id, status_to_column(config, status), status=status, checked=status == "done", card_line=line)
     write_board(config, board)
+    session = read_sessions(config).get("sessions", {}).get(task_id)
+    if session and session.get("workspace_ref"):
+        session["status"] = status
+        upsert_session(config, task_id, session)
+        cmux.set_status(session["workspace_ref"], status)
+        if session.get("run_id") and status in {"review-diff", "failed", "parked", "pr-opened", "done"}:
+            update_run_frontmatter(config, session["run_id"], {"status": status, "ended": now_iso()})
 
 
 def move_command(config: Config, task_id: str, column_or_status: str, *, human: bool = False) -> None:
@@ -270,6 +277,7 @@ def start_task(config: Config, task_id: str) -> dict[str, str]:
         command=cmux_command,
         focus=False,
     )
+    surface_ref = cmux.terminal_surface(workspace_ref)
     cmux.markdown_open(task.abs_path, workspace_ref)
     cmux.markdown_open(run.abs_path, workspace_ref)
     cmux.set_status(workspace_ref, "running")
@@ -282,14 +290,14 @@ def start_task(config: Config, task_id: str) -> dict[str, str]:
             "current_run": run.frontmatter.id,
             "run_count": task.frontmatter.run_count + 1,
             "workspace_ref": workspace_ref,
-            "surface_ref": None,
+            "surface_ref": surface_ref,
             "cmux_command": cmux_command,
         },
     )
     update_run_frontmatter(
         config,
         run.frontmatter.id,
-        {"workspace_ref": workspace_ref, "surface_ref": None, "cmux_command": cmux_command},
+        {"workspace_ref": workspace_ref, "surface_ref": surface_ref, "cmux_command": cmux_command},
     )
     mark_task(config, task_id, "running")
     append_task_log(config, task_id, f"Agent started in `{workspace_ref}` with `{cmux_command}`.")
@@ -297,8 +305,10 @@ def start_task(config: Config, task_id: str) -> dict[str, str]:
         f"Please read the prompt file at {prompt_path} and follow it. "
         "Update the task status to review-diff, needs-human, or failed; if you cannot edit the note, print AGENT_STATUS."
     )
-    cmux.send(workspace_ref, instruction)
-    cmux.send_enter(workspace_ref)
+    if "codex" in cmux_command.lower() and not cmux.wait_for_screen_text(workspace_ref, surface_ref, "OpenAI Codex"):
+        append_task_log(config, task_id, "Timed out waiting for Codex; sending prompt instruction anyway.")
+    cmux.send(workspace_ref, instruction, surface_ref=surface_ref)
+    cmux.send_enter(workspace_ref, surface_ref=surface_ref)
 
     upsert_session(
         config,
@@ -307,7 +317,7 @@ def start_task(config: Config, task_id: str) -> dict[str, str]:
             "task_id": task_id,
             "run_id": run.frontmatter.id,
             "workspace_ref": workspace_ref,
-            "surface_ref": None,
+            "surface_ref": surface_ref,
             "agent": task.frontmatter.agent,
             "worktree": task.frontmatter.worktree,
             "log_file": run.frontmatter.log_file,
@@ -336,8 +346,8 @@ def send_command(config: Config, task_id: str, message: str, *, status: str | No
     append_task_log(config, task_id, f"Human instruction: {message}")
     session = read_sessions(config).get("sessions", {}).get(task_id)
     if session and session.get("workspace_ref"):
-        cmux.send(session["workspace_ref"], message)
-        cmux.send_enter(session["workspace_ref"])
+        cmux.send(session["workspace_ref"], message, surface_ref=session.get("surface_ref"))
+        cmux.send_enter(session["workspace_ref"], surface_ref=session.get("surface_ref"))
     if status:
         mark_task(config, task_id, status)
     return {"saved": True, "sent": bool(session), "message": message}
@@ -608,7 +618,7 @@ def sample_session_transcript(config: Config, task_id: str, session: dict[str, A
     workspace_ref = session.get("workspace_ref")
     if not workspace_ref:
         return None
-    text = cmux.read_screen(workspace_ref)
+    text = cmux.read_screen(workspace_ref, surface_ref=session.get("surface_ref"))
     digest = transcript_hash(text)
     if digest != session.get("transcript_hash"):
         log_file = Path(session["log_file"])

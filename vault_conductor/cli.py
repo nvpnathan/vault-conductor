@@ -186,7 +186,9 @@ def dispatch(config, args):
                 return result, ""
             lines = [f"{task['id']} {task['status']} {task['repo']} {task['title']}" for task in result["tasks"]]
             for task_id, session in result["sessions"].items():
-                lines.append(f"RUNNING {task_id} workspace={session.get('workspace_ref')}")
+                status = session.get("status") or "running"
+                label = "RUNNING" if status == "running" else "SESSION"
+                lines.append(f"{label} {task_id} status={status} workspace={session.get('workspace_ref')}")
             return "\n".join(lines), "\n".join(lines)
         case "start":
             result = start_task(config, args.task_id)

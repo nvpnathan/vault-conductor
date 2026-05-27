@@ -93,6 +93,7 @@ def test_start_creates_cmux_session_run_prompt_and_sends_prompt_file_instruction
     assert result["run_id"] == "AGT-0001-RUN-001"
     assert task.frontmatter.status == "running"
     assert task.frontmatter.workspace_ref == "workspace:1"
+    assert task.frontmatter.surface_ref == "surface:1"
     assert task.frontmatter.cmux_command == "cmux codex-teams"
     assert (config.worktrees_root / "demo" / created["id"]).is_dir()
     assert (config.prompts_root / "AGT-0001-RUN-001.prompt.md").read_text(encoding="utf-8").startswith(
@@ -100,8 +101,10 @@ def test_start_creates_cmux_session_run_prompt_and_sends_prompt_file_instruction
     )
     assert "codex-teams" in " ".join(new_workspace_call)
     assert "read the prompt file" in " ".join(send_call)
+    assert send_call[:5] == ["send", "--workspace", "workspace:1", "--surface", "surface:1"]
     assert str(config.prompts_root / "AGT-0001-RUN-001.prompt.md") in " ".join(send_call)
     assert sessions["sessions"][created["id"]]["workspace_ref"] == "workspace:1"
+    assert sessions["sessions"][created["id"]]["surface_ref"] == "surface:1"
 
     with pytest.raises(ValueError, match="already has a live session"):
         start_task(config, created["id"])
@@ -122,8 +125,50 @@ def test_send_appends_notes_and_forwards_to_live_cmux_session(config, fake_git_r
     assert "Human instruction: Please add the regression test." in task_path.read_text(encoding="utf-8")
     assert "Please add the regression test." in run_path.read_text(encoding="utf-8")
     assert read_task_note(config, created["id"]).frontmatter.status == "needs-human"
-    assert any(call[:1] == ["send"] and "Please add the regression test." in " ".join(call) for call in calls)
-    assert any(call[:1] == ["send-key"] and "enter" in call for call in calls)
+    assert any(
+        call[:5] == ["send", "--workspace", "workspace:1", "--surface", "surface:1"]
+        and "Please add the regression test." in " ".join(call)
+        for call in calls
+    )
+    assert any(
+        call[:5] == ["send-key", "--workspace", "workspace:1", "--surface", "surface:1"] and "enter" in call
+        for call in calls
+    )
+
+
+def test_start_waits_for_codex_before_sending_prompt_instruction(config, fake_git_repo, fake_cmux, monkeypatch):
+    init_command(config, open_obsidian=False)
+    write_registry(config, fake_git_repo)
+    created = new_task_command(config, repo="demo", title="Wait for Codex", status="ready")
+    monkeypatch.setenv(
+        "FAKE_CMUX_SCREEN_SEQUENCE",
+        "Last login\n$ cmux codex-teams\fOpenAI Codex\nFind and fix a bug in @filename",
+    )
+
+    start_task(config, created["id"])
+
+    calls = cmux_calls(fake_cmux)
+    read_index = next(index for index, call in enumerate(calls) if "read-screen" in call)
+    send_index = next(index for index, call in enumerate(calls) if call[:1] == ["send"])
+    assert read_index < send_index
+    assert calls[send_index][:5] == ["send", "--workspace", "workspace:1", "--surface", "surface:1"]
+
+
+def test_mark_updates_live_session_and_cmux_status(config, fake_git_repo, fake_cmux):
+    init_command(config, open_obsidian=False)
+    write_registry(config, fake_git_repo)
+    created = new_task_command(config, repo="demo", title="Ready for review", status="ready")
+    start_task(config, created["id"])
+
+    mark_task(config, created["id"], "review-diff")
+
+    session = read_sessions(config)["sessions"][created["id"]]
+    calls = cmux_calls(fake_cmux)
+    assert session["status"] == "review-diff"
+    assert any(
+        call[:3] == ["set-status", "agent", "review-diff"] and "--workspace" in call and "workspace:1" in call
+        for call in calls
+    )
 
 
 def test_doctor_json_reports_cmux_and_runtime_dirs(config, fake_cmux):

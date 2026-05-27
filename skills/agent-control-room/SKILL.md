@@ -51,6 +51,16 @@ uv run conductor doctor --fix
 
 The canonical executable is `conductor`; use `uv run conductor ...` from the repo unless it has been installed on PATH.
 
+## Agent Provider Names
+
+Use `--agent codex` in conductor task metadata. That provider launches `cmux codex-teams` by default; do not start bare `codex` for managed Agent Control Room tasks.
+
+When debugging launch behavior, check the provider config in `90 System/control-room.config.yml` and expect the default Codex command to be:
+
+```bash
+cmux codex-teams
+```
+
 ## Add A Project
 
 When the user asks to add one repo, do not run `conductor scan` unless they want every repo under `~/repos` registered. Add only that repo to `90 System/repo-registry.yml` and create one project note under `10 Projects/`.

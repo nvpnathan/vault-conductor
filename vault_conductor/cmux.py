@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -77,12 +78,49 @@ def notify(title: str, body: str, workspace_ref: str | None = None) -> None:
     run_cmux(*args)
 
 
-def send(workspace_ref: str, message: str) -> None:
-    run_cmux("send", "--workspace", workspace_ref, message)
+def terminal_surface(workspace_ref: str) -> str | None:
+    panes = cmux_json("list-panes", "--workspace", workspace_ref).get("panes", [])
+    for pane in panes:
+        pane_ref = pane.get("ref")
+        if not pane_ref:
+            continue
+        surfaces = cmux_json("list-pane-surfaces", "--workspace", workspace_ref, "--pane", str(pane_ref)).get("surfaces", [])
+        for surface in surfaces:
+            if surface.get("type") == "terminal" and surface.get("ref"):
+                return str(surface["ref"])
+    return None
 
 
-def send_enter(workspace_ref: str) -> None:
-    run_cmux("send-key", "--workspace", workspace_ref, "enter")
+def wait_for_screen_text(
+    workspace_ref: str,
+    surface_ref: str | None,
+    text: str,
+    *,
+    timeout: float = 30.0,
+    interval: float = 0.25,
+) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if text in read_screen(workspace_ref, surface_ref=surface_ref):
+            return True
+        time.sleep(interval)
+    return False
+
+
+def send(workspace_ref: str, message: str, *, surface_ref: str | None = None) -> None:
+    args = ["send", "--workspace", workspace_ref]
+    if surface_ref:
+        args.extend(["--surface", surface_ref])
+    args.append(message)
+    run_cmux(*args)
+
+
+def send_enter(workspace_ref: str, *, surface_ref: str | None = None) -> None:
+    args = ["send-key", "--workspace", workspace_ref]
+    if surface_ref:
+        args.extend(["--surface", surface_ref])
+    args.append("enter")
+    run_cmux(*args)
 
 
 def close_workspace(workspace_ref: str) -> None:
@@ -94,9 +132,12 @@ def list_workspaces() -> list[dict[str, Any]]:
     return list(data.get("workspaces", []))
 
 
-def read_screen(workspace_ref: str) -> str:
-    data = cmux_json("read-screen", "--workspace", workspace_ref)
+def read_screen(workspace_ref: str, *, surface_ref: str | None = None) -> str:
+    args = ["read-screen", "--workspace", workspace_ref]
+    if surface_ref:
+        args.extend(["--surface", surface_ref])
+    data = cmux_json(*args)
     if "text" in data:
         return str(data["text"])
-    out, _ = run_cmux("read-screen", "--workspace", workspace_ref)
+    out, _ = run_cmux(*args)
     return out
