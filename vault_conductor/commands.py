@@ -32,6 +32,7 @@ from .kanban import (
     update_card_line,
 )
 from .markdown import write_file_atomic
+from .operational_log import append_operational_log
 from .repos import RepoEntry, find_repo, load_repo_registry, registry_path, scan_repos, sync_project_notes
 from .run_notes import append_run_followup, create_run_note, update_run_frontmatter
 from .sessions import read_sessions, remove_session, transcript_hash, upsert_session
@@ -47,6 +48,76 @@ from .tasks import (
     update_task_frontmatter,
 )
 from .git_ops import ensure_worktree
+
+
+DASHBOARD_NOTES = {
+    "Needs Human.md": {
+        "column": "Needs Human",
+        "status": "needs-human",
+        "commands": [
+            "uv run conductor status",
+            "uv run conductor log <TASK_ID> --tail 100",
+            'uv run conductor send <TASK_ID> "Answer or instruction" --status running',
+            "uv run conductor mark <TASK_ID> needs-revision",
+        ],
+    },
+    "Review Queue.md": {
+        "column": "Review Diff",
+        "status": "review-diff",
+        "commands": [
+            "uv run conductor diff <TASK_ID> --stat --save",
+            "uv run conductor test <TASK_ID>",
+            'uv run conductor send <TASK_ID> "Requested revision" --status needs-revision',
+            "uv run conductor mark <TASK_ID> done --human",
+        ],
+    },
+    "Running Agents.md": {
+        "column": "Running",
+        "status": "running",
+        "commands": [
+            "uv run conductor status",
+            "uv run conductor log <TASK_ID> --tail 100",
+            'uv run conductor send <TASK_ID> "Follow-up instruction"',
+            "uv run conductor mark <TASK_ID> review-diff",
+            "uv run conductor mark <TASK_ID> needs-human",
+        ],
+    },
+    "Failed and Parked.md": {
+        "column": "Failed / Parked",
+        "status": "failed or parked",
+        "commands": [
+            "uv run conductor status",
+            "uv run conductor log <TASK_ID> --tail 100",
+            'uv run conductor send <TASK_ID> "Recovery instruction" --status ready',
+            "uv run conductor start <TASK_ID>",
+            "uv run conductor cleanup <TASK_ID> --yes --dry-run",
+        ],
+    },
+}
+
+
+def dashboard_note_content(name: str, note: dict[str, Any]) -> str:
+    commands = "\n".join(note["commands"])
+    return f"""# {name.removesuffix(".md")}
+
+Open the main board and inspect the `{note["column"]}` column.
+
+Tasks in this view use status `{note["status"]}`.
+
+Useful commands from `~/repos/vault-conductor`:
+
+```bash
+cd ~/repos/vault-conductor
+{commands}
+```
+"""
+
+
+def should_refresh_dashboard_note(path: Path, *, force: bool) -> bool:
+    if force or not path.exists():
+        return True
+    text = path.read_text(encoding="utf-8")
+    return "agentctl" in text or "TABLE status, repo, agent" in text
 
 
 def init_command(config: Config, *, force: bool = False, open_obsidian: bool | None = None) -> dict[str, str]:
@@ -95,15 +166,10 @@ def init_command(config: Config, *, force: bool = False, open_obsidian: bool | N
     if not sessions_file.exists():
         write_file_atomic(sessions_file, json.dumps({"version": 1, "sessions": {}}, indent=2) + "\n")
 
-    for name, status_title in {
-        "Needs Human.md": "Needs Human",
-        "Review Queue.md": "Review Diff",
-        "Running Agents.md": "Running",
-        "Failed and Parked.md": "Failed / Parked",
-    }.items():
+    for name, note in DASHBOARD_NOTES.items():
         path = config.control_room_dir / name
-        if not path.exists():
-            write_file_atomic(path, f"# {name.removesuffix('.md')}\n\n```dataview\nTABLE status, repo, agent FROM \"20 Agent Tasks\" WHERE status = \"{status_title}\"\n```\n")
+        if should_refresh_dashboard_note(path, force=force):
+            write_file_atomic(path, dashboard_note_content(name, note))
 
     if open_obsidian if open_obsidian is not None else False:
         open_board(config)
@@ -188,6 +254,21 @@ def write_board(config: Config, board) -> None:
     write_file_atomic(config.board_path, render_board(board))
 
 
+def record_status_change(config: Config, task_id: str, before_status: str, after_status: str, *, actor: str, source: str) -> None:
+    if before_status == after_status:
+        return
+    task = read_task_note(config, task_id)
+    append_task_log(config, task_id, f"Status changed: {before_status} -> {after_status}.")
+    append_operational_log(
+        config,
+        "conductor-status",
+        (
+            f"status changed task={task_id} from={before_status} to={after_status} "
+            f"repo={task.frontmatter.repo} actor={actor} source={source}"
+        ),
+    )
+
+
 def mark_task(config: Config, task_id: str, status: str, *, human: bool = False) -> None:
     if status not in TASK_STATUSES:
         raise ValueError(f"Invalid status: {status}")
@@ -205,6 +286,14 @@ def mark_task(config: Config, task_id: str, status: str, *, human: bool = False)
     )
     move_card(board, task_id, status_to_column(config, status), status=status, checked=status == "done", card_line=line)
     write_board(config, board)
+    record_status_change(
+        config,
+        task_id,
+        before.frontmatter.status,
+        after.frontmatter.status,
+        actor="human" if human else "conductor",
+        source="mark",
+    )
     session = read_sessions(config).get("sessions", {}).get(task_id)
     if session and session.get("workspace_ref"):
         session["status"] = status
@@ -242,9 +331,18 @@ def sync_command(config: Config, *, board_wins: bool = False) -> dict[str, int]:
             located = find_card(board, task.frontmatter.id)
             board_status = status_from_column(config, located.column_title) if located else None
             if board_status and board_status != status:
+                before_status = status
                 update_task_frontmatter(config, task.frontmatter.id, {"status": board_status})
                 status = board_status
                 task = read_task_note(config, task.frontmatter.id)
+                record_status_change(
+                    config,
+                    task.frontmatter.id,
+                    before_status,
+                    status,
+                    actor="human",
+                    source="sync-board-wins",
+                )
         located = find_card(board, task.frontmatter.id)
         line = update_card_line(
             located.card.line if located else build_card_line(task.frontmatter),
@@ -289,7 +387,6 @@ def start_task(config: Config, task_id: str) -> dict[str, str]:
         config,
         task_id,
         {
-            "status": "running",
             "current_run": run.frontmatter.id,
             "run_count": task.frontmatter.run_count + 1,
             "workspace_ref": workspace_ref,
@@ -302,17 +399,6 @@ def start_task(config: Config, task_id: str) -> dict[str, str]:
         run.frontmatter.id,
         {"workspace_ref": workspace_ref, "surface_ref": surface_ref, "cmux_command": cmux_command},
     )
-    mark_task(config, task_id, "running")
-    append_task_log(config, task_id, f"Agent started in `{workspace_ref}` with `{cmux_command}`.")
-    instruction = (
-        f"Please read the prompt file at {prompt_path} and follow it. "
-        "Update the task status to review-diff, needs-human, or failed; if you cannot edit the note, print AGENT_STATUS."
-    )
-    if "codex" in cmux_command.lower() and not cmux.wait_for_screen_text(workspace_ref, surface_ref, "OpenAI Codex"):
-        append_task_log(config, task_id, "Timed out waiting for Codex; sending prompt instruction anyway.")
-    cmux.send(workspace_ref, instruction, surface_ref=surface_ref)
-    cmux.send_enter(workspace_ref, surface_ref=surface_ref)
-
     upsert_session(
         config,
         task_id,
@@ -329,6 +415,16 @@ def start_task(config: Config, task_id: str) -> dict[str, str]:
             "transcript_hash": "",
         },
     )
+    mark_task(config, task_id, "running")
+    append_task_log(config, task_id, f"Agent started in `{workspace_ref}` with `{cmux_command}`.")
+    instruction = (
+        f"Please read the prompt file at {prompt_path} and follow it. "
+        "Update the task status to review-diff, needs-human, or failed; if you cannot edit the note, print AGENT_STATUS."
+    )
+    if "codex" in cmux_command.lower() and not cmux.wait_for_screen_text(workspace_ref, surface_ref, "OpenAI Codex"):
+        append_task_log(config, task_id, "Timed out waiting for Codex; sending prompt instruction anyway.")
+    cmux.send(workspace_ref, instruction, surface_ref=surface_ref)
+    cmux.send_enter(workspace_ref, surface_ref=surface_ref)
     return {
         "run_id": run.frontmatter.id,
         "log_file": run.frontmatter.log_file,

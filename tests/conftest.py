@@ -66,6 +66,9 @@ def emit(data, text="OK"):
     else:
         print(text)
 
+def emit_text(text):
+    print(text)
+
 if cmd == "ping":
     emit({"ok": True}, "OK")
 elif cmd == "new-workspace":
@@ -93,7 +96,7 @@ elif cmd == "new-workspace":
     }
     data["workspaces"].append(workspace)
     write_state(data)
-    emit({"workspace": workspace}, f"OK {ref}")
+    emit_text(f"OK {ref}")
 elif cmd == "list-workspaces":
     emit(read_state())
 elif cmd == "list-panes":

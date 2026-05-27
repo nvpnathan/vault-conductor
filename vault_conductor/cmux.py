@@ -45,18 +45,22 @@ def new_workspace(*, name: str, description: str, cwd: str | Path, command: str,
         "--focus",
         "true" if focus else "false",
     ]
-    data = cmux_json(*args)
+    out, rc = run_cmux(*args)
+    if rc != 0:
+        raise RuntimeError(f"cmux new-workspace failed: {out}")
+    try:
+        data = json.loads(out)
+    except json.JSONDecodeError:
+        data = {}
     ref = (
         data.get("workspace", {}).get("ref")
         or data.get("workspace", {}).get("id")
+        or data.get("workspace_ref")
         or data.get("ref")
         or data.get("id")
     )
     if ref:
         return str(ref)
-    out, rc = run_cmux(*args)
-    if rc != 0:
-        raise RuntimeError(f"cmux new-workspace failed: {out}")
     for token in out.split():
         if token.startswith("workspace:"):
             return token
@@ -130,6 +134,11 @@ def close_workspace(workspace_ref: str) -> None:
 def list_workspaces() -> list[dict[str, Any]]:
     data = cmux_json("list-workspaces")
     return list(data.get("workspaces", []))
+
+
+def workspace_exists(workspace_ref: str) -> bool:
+    _, rc = run_cmux("read-screen", "--workspace", workspace_ref, timeout=5)
+    return rc == 0
 
 
 def read_screen(workspace_ref: str, *, surface_ref: str | None = None) -> str:

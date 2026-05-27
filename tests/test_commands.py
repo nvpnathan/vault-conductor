@@ -136,6 +136,62 @@ old completed list
     assert f"[[20 Agent Tasks/{created['id']} Active item]]" in text
 
 
+def test_status_changes_are_logged_to_task_note_and_operational_log(config, fake_git_repo):
+    init_command(config, open_obsidian=False)
+    write_registry(config, fake_git_repo)
+    created = new_task_command(config, repo="demo", title="Log status changes", status="ready")
+
+    mark_task(config, created["id"], "review-diff")
+    mark_task(config, created["id"], "done", human=True)
+
+    task_text = (config.tasks_dir / "AGT-0001 Log status changes.md").read_text(encoding="utf-8")
+    operational_log = (config.logs_root / "conductor-watch.log").read_text(encoding="utf-8")
+
+    assert "Status changed: ready -> review-diff." in task_text
+    assert "Status changed: review-diff -> done." in task_text
+    assert "conductor-status status changed task=AGT-0001 from=ready to=review-diff repo=demo actor=conductor source=mark" in operational_log
+    assert "conductor-status status changed task=AGT-0001 from=review-diff to=done repo=demo actor=human source=mark" in operational_log
+
+
+def test_sync_board_wins_logs_status_changes(config, fake_git_repo):
+    init_command(config, open_obsidian=False)
+    write_registry(config, fake_git_repo)
+    created = new_task_command(config, repo="demo", title="Log board sync", status="ready")
+
+    move_card_only_on_board(config, created["id"], "Running")
+    sync_command(config, board_wins=True)
+
+    operational_log = (config.logs_root / "conductor-watch.log").read_text(encoding="utf-8")
+    assert "conductor-status status changed task=AGT-0001 from=ready to=running repo=demo actor=human source=sync-board-wins" in operational_log
+
+
+def test_init_repairs_legacy_agentctl_dashboard_notes(config):
+    init_command(config, open_obsidian=False)
+    dashboard_names = [
+        "Needs Human.md",
+        "Review Queue.md",
+        "Running Agents.md",
+        "Failed and Parked.md",
+    ]
+    for name in dashboard_names:
+        (config.control_room_dir / name).write_text(
+            f"# {name.removesuffix('.md')}\n\n```bash\nagentctl status\nagentctl mark <TASK_ID> running\n```\n",
+            encoding="utf-8",
+        )
+
+    init_command(config, open_obsidian=False)
+
+    for name in dashboard_names:
+        text = (config.control_room_dir / name).read_text(encoding="utf-8")
+        assert "agentctl" not in text
+        assert "uv run conductor" in text
+        assert "cd ~/repos/vault-conductor" in text
+    assert "needs-human" in (config.control_room_dir / "Needs Human.md").read_text(encoding="utf-8")
+    assert "review-diff" in (config.control_room_dir / "Review Queue.md").read_text(encoding="utf-8")
+    assert "running" in (config.control_room_dir / "Running Agents.md").read_text(encoding="utf-8")
+    assert "failed or parked" in (config.control_room_dir / "Failed and Parked.md").read_text(encoding="utf-8")
+
+
 def test_start_creates_cmux_session_run_prompt_and_sends_prompt_file_instruction(config, fake_git_repo, fake_cmux):
     init_command(config, open_obsidian=False)
     write_registry(config, fake_git_repo)
@@ -146,10 +202,12 @@ def test_start_creates_cmux_session_run_prompt_and_sends_prompt_file_instruction
     task = read_task_note(config, created["id"])
     sessions = read_sessions(config)
     calls = cmux_calls(fake_cmux)
-    new_workspace_call = next(call for call in calls if "new-workspace" in call)
+    new_workspace_calls = [call for call in calls if "new-workspace" in call]
+    new_workspace_call = new_workspace_calls[0]
     send_call = next(call for call in calls if call[:1] == ["send"])
 
     assert result["run_id"] == "AGT-0001-RUN-001"
+    assert len(new_workspace_calls) == 1
     assert task.frontmatter.status == "running"
     assert task.frontmatter.workspace_ref == "workspace:1"
     assert task.frontmatter.surface_ref == "surface:1"
