@@ -10,10 +10,15 @@ def test_repo_packages_conductor_skill_and_install_docs():
     text = skill.read_text(encoding="utf-8")
     legacy_cli = "agent" + "ctl"
     assert "name: agent-control-room" in text
-    assert "uv run conductor" in text
+    assert "conductor activity" in text
+    assert "conductor pr AGT-0001 --auto" in text
     assert "cmux codex-teams" in text
+    assert "Only the human may mark `done`" in text
+    assert "uv run conductor" in text
     assert legacy_cli not in text
 
     readme_text = readme.read_text(encoding="utf-8")
-    assert "Install the Codex Skill" in readme_text
+    assert "Agent Control Room Skill" in readme_text
+    assert "setup.sh` installs the Codex skill copy automatically" in readme_text
     assert "skills/agent-control-room" in readme_text
+    assert "conductor pr AGT-0001 --auto" in readme_text

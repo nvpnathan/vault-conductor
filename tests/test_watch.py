@@ -28,6 +28,25 @@ def test_watch_starts_tasks_dragged_to_running_and_detects_agent_status(config, 
     assert read_task_note(config, created["id"]).frontmatter.status == "review-diff"
 
 
+def test_watch_detects_agent_activity_fallback(config, fake_git_repo, fake_cmux, monkeypatch):
+    init_command(config, open_obsidian=False)
+    write_registry(config, fake_git_repo)
+    created = new_task_command(config, repo="demo", title="Watch activity", status="ready")
+
+    move_card_only_on_board(config, created["id"], "Running")
+    watch_once(config)
+
+    monkeypatch.setenv("FAKE_CMUX_SCREEN", "AGENT_ACTIVITY: reading | Inspecting commands\n")
+    watch_once(config)
+
+    task = read_task_note(config, created["id"]).frontmatter
+    assert task.current_activity == "reading"
+    assert task.current_activity_detail == "Inspecting commands"
+    assert "Reading - Inspecting commands" in (config.runs_dir / "AGT-0001-RUN-001-activity.md").read_text(
+        encoding="utf-8"
+    )
+
+
 def test_watch_logs_activity_without_polling_noise_by_default(config, fake_git_repo, fake_cmux):
     init_command(config, open_obsidian=False)
     write_registry(config, fake_git_repo)

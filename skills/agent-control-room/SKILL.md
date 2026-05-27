@@ -27,15 +27,15 @@ Default paths:
 Before changing dashboard state, inspect current state from the `vault-conductor` checkout:
 
 ```bash
-uv run conductor doctor
-uv run conductor status
+conductor doctor
+conductor status
 ```
 
 If command behavior is unclear, prefer the implementation repo over memory:
 
 ```bash
-uv run conductor --help
-uv run conductor <command> --help
+conductor --help
+conductor <command> --help
 sed -n '1,220p' README.md
 ```
 
@@ -45,11 +45,11 @@ Use this when the vault or CLI needs setup:
 
 ```bash
 uv sync --dev
-uv run conductor init --vault "$HOME/Agent Control Room" --repos "$HOME/repos" --no-open
-uv run conductor doctor --fix
+conductor init --vault "$HOME/Agent Control Room" --repos "$HOME/repos" --no-open
+conductor doctor --fix
 ```
 
-The canonical executable is `conductor`; use `uv run conductor ...` from the repo unless it has been installed on PATH.
+The canonical executable is `conductor`. Use `uv run conductor ...` only as a development fallback when the installed CLI is unavailable.
 
 ## Agent Provider Names
 
@@ -94,7 +94,7 @@ Use `conductor scan` only when the user asks to discover/register repositories b
 Create a card and task note:
 
 ```bash
-uv run conductor new \
+conductor new \
   --repo <repo> \
   --title "<title>" \
   --agent codex \
@@ -108,39 +108,56 @@ uv run conductor new \
 Start a task only when the user asks to run an agent:
 
 ```bash
-uv run conductor start AGT-0001
-uv run conductor log AGT-0001 --tail 100
-uv run conductor status
+conductor start AGT-0001
+conductor log AGT-0001 --tail 100
+conductor status
 ```
 
 The runner creates a worktree at `~/.agent-control-room/worktrees/<repo>/<task-id>/`, a run note, a prompt file, and a log file.
+
+## Activity Reporting
+
+Report meaningful current activity with the standard vocabulary so cmux can show stable labels, icons, and colors:
+
+```bash
+conductor activity AGT-0001 reading --detail "Inspecting task parser"
+conductor activity AGT-0001 planning --detail "Choosing implementation slice"
+conductor activity AGT-0001 editing --detail "Updating watcher"
+conductor activity AGT-0001 testing --detail "Running pytest"
+conductor activity AGT-0001 debugging --detail "Investigating failing test"
+conductor activity AGT-0001 waiting --detail "Waiting for test command"
+conductor activity AGT-0001 blocked --detail "Need human decision: <question>"
+conductor activity AGT-0001 reviewing --detail "Preparing handoff"
+```
+
+Use `waiting` for non-human waits such as command output. Use `blocked` only when a human decision is needed, and pair it with exactly one specific question plus `needs-human`.
 
 ## Review And Control Flow
 
 Use status transitions deliberately:
 
 ```bash
-uv run conductor mark AGT-0001 needs-human
-uv run conductor send AGT-0001 "Specific follow-up instruction"
-uv run conductor mark AGT-0001 needs-revision
-uv run conductor mark AGT-0001 ready
-uv run conductor diff AGT-0001 --stat --save
-uv run conductor test AGT-0001
-uv run conductor pr AGT-0001 --commit --yes
-uv run conductor mark AGT-0001 done --human
+conductor mark AGT-0001 needs-human
+conductor send AGT-0001 "Specific follow-up instruction"
+conductor mark AGT-0001 needs-revision
+conductor mark AGT-0001 ready
+conductor diff AGT-0001 --stat --save
+conductor test AGT-0001
+conductor pr AGT-0001 --auto
+conductor mark AGT-0001 done --human
 ```
 
-Only the human may mark `done`; never do this automatically after tests or PR creation.
+Use `conductor pr <TASK_ID> --auto` only after implementation is ready for review. It creates the PR when gates pass and opens it in the task's cmux workspace. Only the human may mark `done`; never do this automatically after tests or PR creation.
 
 ## Sync And Drift
 
 If task notes and board cards drift because a human edited Markdown or dragged cards in Obsidian:
 
 ```bash
-uv run conductor sync
+conductor sync
 ```
 
-Task frontmatter is the default source of truth. Use `uv run conductor sync --board-wins` only when the human explicitly wants board placement to override task note status.
+Task frontmatter is the default source of truth. Use `conductor sync --board-wins` only when the human explicitly wants board placement to override task note status.
 
 ## Safety Rules
 
@@ -156,13 +173,13 @@ Task frontmatter is the default source of truth. Use `uv run conductor sync --bo
 After dashboard changes, run the smallest command that proves the change:
 
 ```bash
-uv run conductor doctor
-uv run conductor status
+conductor doctor
+conductor status
 ```
 
 For implementation changes in `vault-conductor`, verify:
 
 ```bash
 uv run pytest
-uv run conductor --help
+conductor --help
 ```

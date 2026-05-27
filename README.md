@@ -11,11 +11,11 @@ git clone <vault-conductor-repo-url>
 cd vault-conductor
 bash setup.sh
 
-uv run conductor init --vault "$HOME/Agent Control Room" --repos "$HOME/repos" --no-open
-uv run conductor doctor --json
-uv run conductor scan
-uv run conductor new --repo my-repo --title "Fix failing tests" --agent codex --status ready
-uv run conductor start AGT-0001
+conductor init --vault "$HOME/Agent Control Room" --repos "$HOME/repos" --no-open
+conductor doctor --json
+conductor scan
+conductor new --repo my-repo --title "Fix failing tests" --agent codex --status ready
+conductor start AGT-0001
 ```
 
 Codex and Claude use cmux providers by default:
@@ -25,9 +25,9 @@ Codex and Claude use cmux providers by default:
 
 Custom providers can be configured in `90 System/control-room.config.yml`.
 
-## Install the Codex Skill
+## Agent Control Room Skill
 
-This repo includes an optional Codex skill for agents working with conductor-managed vaults.
+This repo includes an agent-neutral Skill Recipe for conductor-managed vaults. `bash setup.sh` installs the Codex skill copy automatically. To reinstall it manually:
 
 ```bash
 cd vault-conductor
@@ -64,28 +64,29 @@ Use `--runtime-root <path>` to isolate those runtime files for testing or altern
 ## Commands
 
 ```bash
-uv run conductor init --no-open
-uv run conductor doctor --json
-uv run conductor scan
-uv run conductor new --repo my-repo --title "Implement feature" --status ready
-uv run conductor status
-uv run conductor start AGT-0001
-uv run conductor send AGT-0001 "Please add a regression test"
-uv run conductor log AGT-0001 --tail 100
-uv run conductor diff AGT-0001 --stat --save
-uv run conductor test AGT-0001
-uv run conductor pr AGT-0001 --commit --yes
-uv run conductor stop AGT-0001 --park
-uv run conductor --dry-run cleanup AGT-0001 --yes
-uv run conductor sync
-uv run conductor watch
-uv run conductor dashboard
+conductor init --no-open
+conductor doctor --json
+conductor scan
+conductor new --repo my-repo --title "Implement feature" --status ready
+conductor status
+conductor start AGT-0001
+conductor send AGT-0001 "Please add a regression test"
+conductor activity AGT-0001 testing --detail "Running pytest"
+conductor log AGT-0001 --tail 100
+conductor diff AGT-0001 --stat --save
+conductor test AGT-0001
+conductor pr AGT-0001 --auto
+conductor stop AGT-0001 --park
+conductor --dry-run cleanup AGT-0001 --yes
+conductor sync
+conductor watch
+conductor dashboard
 ```
 
 Only a human may mark a task done:
 
 ```bash
-uv run conductor mark AGT-0001 done --human
+conductor mark AGT-0001 done --human
 ```
 
 ## Statuses
@@ -112,5 +113,7 @@ Task note frontmatter is authoritative. `conductor sync --board-wins` is availab
 ```bash
 uv sync --dev
 uv run pytest
-uv run conductor doctor --json
+conductor doctor --json
 ```
+
+When the installed CLI is not available during development, use `uv run conductor ...` from this checkout as a fallback.

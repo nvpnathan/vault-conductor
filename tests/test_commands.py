@@ -5,10 +5,12 @@ import pytest
 import yaml
 
 from vault_conductor.commands import (
+    activity_command,
     doctor_command,
     init_command,
     mark_task,
     new_task_command,
+    pr_command,
     send_command,
     start_task,
     sync_command,
@@ -17,7 +19,7 @@ from vault_conductor.kanban import find_card, parse_board, render_board
 from vault_conductor.sessions import read_sessions
 from vault_conductor.tasks import read_task_note
 
-from conftest import cmux_calls
+from conftest import cmux_calls, git
 
 
 def write_registry(config, repo):
@@ -184,8 +186,8 @@ def test_init_repairs_legacy_agentctl_dashboard_notes(config):
     for name in dashboard_names:
         text = (config.control_room_dir / name).read_text(encoding="utf-8")
         assert "agentctl" not in text
-        assert "uv run conductor" in text
-        assert "cd ~/repos/vault-conductor" in text
+        assert "conductor" in text
+        assert "uv run conductor" not in text
     assert "needs-human" in (config.control_room_dir / "Needs Human.md").read_text(encoding="utf-8")
     assert "review-diff" in (config.control_room_dir / "Review Queue.md").read_text(encoding="utf-8")
     assert "running" in (config.control_room_dir / "Running Agents.md").read_text(encoding="utf-8")
@@ -216,12 +218,14 @@ def test_start_creates_cmux_session_run_prompt_and_sends_prompt_file_instruction
     assert (config.prompts_root / "AGT-0001-RUN-001.prompt.md").read_text(encoding="utf-8").startswith(
         "# Agent Control Room Task"
     )
+    assert (config.runs_dir / "AGT-0001-RUN-001-activity.md").exists()
     assert "codex-teams" in " ".join(new_workspace_call)
     assert "read the prompt file" in " ".join(send_call)
     assert send_call[:5] == ["send", "--workspace", "workspace:1", "--surface", "surface:1"]
     assert str(config.prompts_root / "AGT-0001-RUN-001.prompt.md") in " ".join(send_call)
     assert sessions["sessions"][created["id"]]["workspace_ref"] == "workspace:1"
     assert sessions["sessions"][created["id"]]["surface_ref"] == "surface:1"
+    assert sessions["sessions"][created["id"]]["activity_file"] == str(config.runs_dir / "AGT-0001-RUN-001-activity.md")
 
     with pytest.raises(ValueError, match="already has a live session"):
         start_task(config, created["id"])
@@ -251,6 +255,101 @@ def test_send_appends_notes_and_forwards_to_live_cmux_session(config, fake_git_r
         call[:5] == ["send-key", "--workspace", "workspace:1", "--surface", "surface:1"] and "enter" in call
         for call in calls
     )
+
+
+def test_activity_updates_task_timeline_and_cmux_status(config, fake_git_repo, fake_cmux):
+    init_command(config, open_obsidian=False)
+    write_registry(config, fake_git_repo)
+    created = new_task_command(config, repo="demo", title="Report activity", status="ready")
+    start_task(config, created["id"])
+
+    result = activity_command(config, created["id"], "testing", detail="Running pytest")
+
+    task = read_task_note(config, created["id"])
+    calls = cmux_calls(fake_cmux)
+    timeline = config.runs_dir / "AGT-0001-RUN-001-activity.md"
+
+    assert result["activity"] == "testing"
+    assert task.frontmatter.current_activity == "testing"
+    assert task.frontmatter.current_activity_detail == "Running pytest"
+    assert "Testing - Running pytest" in timeline.read_text(encoding="utf-8")
+    assert any(call[:3] == ["set-status", "agent_activity", "Testing"] for call in calls)
+    assert any(call[:2] == ["log", "--source"] and "Testing: Running pytest" in call for call in calls)
+
+    with pytest.raises(ValueError, match="Unknown activity"):
+        activity_command(config, created["id"], "vibing")
+
+
+def test_auto_pr_handoff_runs_tests_creates_pr_and_opens_cmux_browser(
+    config,
+    fake_git_repo,
+    fake_cmux,
+    tmp_path,
+):
+    remote = tmp_path / "remote.git"
+    git(["init", "--bare", str(remote)], tmp_path)
+    git(["remote", "add", "origin", str(remote)], fake_git_repo)
+    git(["push", "-u", "origin", "main"], fake_git_repo)
+    gh = fake_cmux.parent / "bin" / "gh"
+    gh.write_text("#!/bin/sh\nprintf '%s\\n' 'https://github.test/demo/pull/1'\n", encoding="utf-8")
+    gh.chmod(0o755)
+
+    init_command(config, open_obsidian=False)
+    write_registry(config, fake_git_repo)
+    created = new_task_command(
+        config,
+        repo="demo",
+        title="Open PR",
+        status="ready",
+        test_command="python -c 'print(\"ok\")'",
+    )
+    start_task(config, created["id"])
+    task = read_task_note(config, created["id"])
+    Path(task.frontmatter.worktree, "change.txt").write_text("changed\n", encoding="utf-8")
+    mark_task(config, created["id"], "review-diff")
+
+    url = pr_command(config, created["id"], auto=True)
+
+    task = read_task_note(config, created["id"])
+    calls = cmux_calls(fake_cmux)
+    assert url == "https://github.test/demo/pull/1"
+    assert task.frontmatter.status == "pr-opened"
+    assert task.frontmatter.pr_url == url
+    assert task.frontmatter.last_test_status == "passed"
+    assert "Exit code: 0" in (config.prompts_root / "AGT-0001-pr-body.md").read_text(encoding="utf-8")
+    assert any(call[:4] == ["new-pane", "--type", "browser", "--direction"] and url in call for call in calls)
+    assert any(call[:2] == ["select-workspace", "--workspace"] and "workspace:1" in call for call in calls)
+
+
+def test_auto_pr_handoff_stops_when_tests_fail(config, fake_git_repo, fake_cmux, tmp_path):
+    remote = tmp_path / "remote.git"
+    git(["init", "--bare", str(remote)], tmp_path)
+    git(["remote", "add", "origin", str(remote)], fake_git_repo)
+    git(["push", "-u", "origin", "main"], fake_git_repo)
+
+    init_command(config, open_obsidian=False)
+    write_registry(config, fake_git_repo)
+    created = new_task_command(
+        config,
+        repo="demo",
+        title="Fail tests",
+        status="ready",
+        test_command="python -c 'import sys; sys.exit(3)'",
+    )
+    start_task(config, created["id"])
+    task = read_task_note(config, created["id"])
+    Path(task.frontmatter.worktree, "change.txt").write_text("changed\n", encoding="utf-8")
+    mark_task(config, created["id"], "review-diff")
+
+    with pytest.raises(ValueError, match="Tests failed"):
+        pr_command(config, created["id"], auto=True)
+
+    task = read_task_note(config, created["id"])
+    calls = cmux_calls(fake_cmux)
+    assert task.frontmatter.status == "review-diff"
+    assert task.frontmatter.pr_url is None
+    assert task.frontmatter.last_test_status == "failed"
+    assert any(call[:2] == ["notify", "--title"] and "Tests failed" in call for call in calls)
 
 
 def test_start_waits_for_codex_before_sending_prompt_instruction(config, fake_git_repo, fake_cmux, monkeypatch):
@@ -298,6 +397,9 @@ def test_doctor_json_reports_cmux_and_runtime_dirs(config, fake_cmux):
     assert checks["board"] == "OK"
     assert checks["columns"] == "OK"
     assert checks["cmux"] == "OK"
+    assert "conductor-cli" in checks
+    assert "packageVersion" in result["cli"]
+    assert "modulePath" in result["cli"]
     assert result["paths"]["stateRoot"] == str(config.state_root)
     json.dumps(result)
 

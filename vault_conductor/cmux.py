@@ -75,11 +75,43 @@ def set_status(workspace_ref: str, status: str, *, icon: str = "sparkle", color:
     run_cmux("set-status", "agent", status, "--icon", icon, "--color", color, "--workspace", workspace_ref)
 
 
+def set_activity(workspace_ref: str, label: str, *, icon: str, color: str) -> None:
+    run_cmux(
+        "set-status",
+        "agent_activity",
+        label,
+        "--icon",
+        icon,
+        "--color",
+        color,
+        "--priority",
+        "80",
+        "--workspace",
+        workspace_ref,
+    )
+
+
+def log(message: str, *, workspace_ref: str | None = None, source: str = "conductor") -> None:
+    args = ["log", "--source", source]
+    if workspace_ref:
+        args.extend(["--workspace", workspace_ref])
+    args.append(message)
+    run_cmux(*args)
+
+
 def notify(title: str, body: str, workspace_ref: str | None = None) -> None:
     args = ["notify", "--title", title, "--body", body]
     if workspace_ref:
         args.extend(["--workspace", workspace_ref])
     run_cmux(*args)
+
+
+def open_browser_split(url: str, workspace_ref: str) -> None:
+    run_cmux("new-pane", "--type", "browser", "--direction", "right", "--workspace", workspace_ref, "--url", url, "--focus", "true")
+
+
+def select_workspace(workspace_ref: str) -> None:
+    run_cmux("select-workspace", "--workspace", workspace_ref)
 
 
 def terminal_surface(workspace_ref: str) -> str | None:

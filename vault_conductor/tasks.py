@@ -68,6 +68,8 @@ class Task:
     last_exit_code: int | None = None
     last_test_status: str | None = None
     last_diff_stat: str | None = None
+    current_activity: str | None = None
+    current_activity_detail: str | None = None
     type: str = "agent-task"
 
     @classmethod

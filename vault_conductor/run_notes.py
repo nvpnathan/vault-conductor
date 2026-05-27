@@ -27,6 +27,9 @@ class Run:
     ended: str | None
     log_file: str
     prompt_file: str
+    activity_file: str | None = None
+    current_activity: str | None = None
+    current_activity_detail: str | None = None
     workspace_ref: str | None = None
     surface_ref: str | None = None
     cmux_command: str | None = None
@@ -50,6 +53,9 @@ class Run:
             ended=data.get("ended"),
             log_file=str(data.get("log_file", "")),
             prompt_file=str(data.get("prompt_file", "")),
+            activity_file=data.get("activity_file"),
+            current_activity=data.get("current_activity"),
+            current_activity_detail=data.get("current_activity_detail"),
             workspace_ref=data.get("workspace_ref"),
             surface_ref=data.get("surface_ref"),
             cmux_command=data.get("cmux_command"),
@@ -74,6 +80,7 @@ def create_run_note(config: Config, task: TaskNote) -> RunNote:
     run_id = allocate_run_id(config, task.frontmatter.id)
     prompt_file = config.prompts_root / f"{run_id}.prompt.md"
     log_file = config.logs_root / f"{run_id}.log"
+    activity_file = config.runs_dir / f"{run_id}-activity.md"
     run = Run(
         id=run_id,
         task_id=task.frontmatter.id,
@@ -90,6 +97,7 @@ def create_run_note(config: Config, task: TaskNote) -> RunNote:
         ended=None,
         log_file=str(log_file),
         prompt_file=str(prompt_file),
+        activity_file=str(activity_file),
     )
     rel_path = f"30 Agent Runs/{run_id}-{task.frontmatter.agent}.md"
     abs_path = config.vault_path / rel_path
@@ -114,7 +122,10 @@ def find_run_path(config: Config, run_id_or_path: str) -> Path:
         if not config.runs_dir.exists():
             raise FileNotFoundError(f"Run note not found for {run_id_or_path}")
         for path in sorted(config.runs_dir.glob("*.md")):
-            if path.name.startswith(run_id_or_path):
+            if not path.name.startswith(run_id_or_path):
+                continue
+            fm, _ = parse_markdown(path.read_text(encoding="utf-8"))
+            if fm.get("type", "agent-run") == "agent-run":
                 return path
         for path in sorted(config.runs_dir.glob("*.md")):
             fm, _ = parse_markdown(path.read_text(encoding="utf-8"))
@@ -154,6 +165,7 @@ def replace_run_section(config: Config, run_id: str, heading: str, content: str)
 
 
 def run_body(run: Run) -> str:
+    activity = run.activity_file or "Pending."
     return f"""# Summary
 
 Run {run.id} created.
@@ -165,6 +177,10 @@ See prompt file: {run.prompt_file}
 # Live log pointer
 
 {run.log_file}
+
+# Activity timeline
+
+{activity}
 
 # Agent output summary
 

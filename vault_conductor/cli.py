@@ -4,7 +4,9 @@ import argparse
 import json
 import sys
 
+from .activity import ACTIVITY_DEFINITIONS
 from .commands import (
+    activity_command,
     cleanup_command,
     diff_command,
     doctor_command,
@@ -85,6 +87,11 @@ def build_parser() -> argparse.ArgumentParser:
     send.add_argument("message")
     send.add_argument("--status", choices=TASK_STATUSES)
 
+    activity = sub.add_parser("activity")
+    activity.add_argument("task_id")
+    activity.add_argument("activity", choices=sorted(ACTIVITY_DEFINITIONS))
+    activity.add_argument("--detail", default="")
+
     log = sub.add_parser("log")
     log.add_argument("task_id")
     log.add_argument("--tail", type=int)
@@ -104,6 +111,7 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--commit", action="store_true")
     pr.add_argument("--yes", action="store_true")
     pr.add_argument("--force", action="store_true")
+    pr.add_argument("--auto", action="store_true")
     pr.add_argument("--dry-run", dest="command_dry_run", action="store_true")
 
     cleanup = sub.add_parser("cleanup")
@@ -184,7 +192,14 @@ def dispatch(config, args):
             result = status_command(config)
             if config.flags.get("json"):
                 return result, ""
-            lines = [f"{task['id']} {task['status']} {task['repo']} {task['title']}" for task in result["tasks"]]
+            lines = []
+            for task in result["tasks"]:
+                activity = task.get("current_activity")
+                detail = task.get("current_activity_detail")
+                activity_text = f" activity={activity}" if activity else ""
+                if activity and detail:
+                    activity_text += f" detail={detail}"
+                lines.append(f"{task['id']} {task['status']} {task['repo']} {task['title']}{activity_text}")
             for task_id, session in result["sessions"].items():
                 status = session.get("status") or "running"
                 label = "RUNNING" if status == "running" else "SESSION"
@@ -205,6 +220,9 @@ def dispatch(config, args):
         case "send":
             result = send_command(config, args.task_id, args.message, status=args.status)
             return result, "Follow-up saved."
+        case "activity":
+            result = activity_command(config, args.task_id, args.activity, detail=args.detail)
+            return result, f"Activity {result['activity']} recorded for {args.task_id}"
         case "log":
             output = log_command(config, args.task_id, tail=args.tail)
             return output, output
@@ -215,7 +233,15 @@ def dispatch(config, args):
             result = test_command(config, args.task_id)
             return result, f"Test command exited {result['exitCode']}"
         case "pr":
-            url = pr_command(config, args.task_id, commit=args.commit, yes=args.yes, force=args.force, dry_run=config.flags.get("dry_run", False))
+            url = pr_command(
+                config,
+                args.task_id,
+                commit=args.commit,
+                yes=args.yes,
+                force=args.force,
+                auto=args.auto,
+                dry_run=config.flags.get("dry_run", False),
+            )
             return {"pr_url": url}, f"PR opened: {url}"
         case "cleanup":
             result = cleanup_command(config, args.task_id, yes=args.yes, force=args.force, branch=args.branch, dry_run=config.flags.get("dry_run", False))

@@ -19,9 +19,11 @@ You are working on a task managed by an Obsidian Kanban Agent Control Room.
 3. Do not merge, delete branches, delete worktrees, or mark the task Done.
 4. Keep changes minimal and focused on the acceptance criteria.
 5. If blocked, ask exactly one specific human question.
-6. If blocked, update the task note status to `needs-human` when you have access to the vault. If not, clearly print `AGENT_STATUS: needs-human`.
-7. When implementation is ready for review, update the task note status to `review-diff` when you have access to the vault. If not, clearly print `AGENT_STATUS: review-diff`.
-8. Include changed files, test results, and risks in your final summary.
+6. Report meaningful current activity with `conductor activity {task.frontmatter.id} <activity> --detail "<detail>"`.
+7. Use only these activities: reading, planning, editing, testing, debugging, waiting, blocked, reviewing.
+8. If blocked on a human, ask exactly one specific question and set status to `needs-human`; if you cannot edit the note, clearly print `AGENT_STATUS: needs-human`.
+9. When implementation is ready for review, set status to `review-diff`; if you cannot edit the note, clearly print `AGENT_STATUS: review-diff`.
+10. Include changed files, test results, and risks in your final summary.
 
 ## Task note
 
@@ -97,4 +99,12 @@ def detect_agent_status(text: str) -> str | None:
         match = re.match(r"^AGENT_STATUS:\s*(needs-human|review-diff|failed)\s*$", line.strip())
         if match:
             return match.group(1)
+    return None
+
+
+def detect_agent_activity(text: str) -> tuple[str, str] | None:
+    for line in text.replace("\r\n", "\n").split("\n"):
+        match = re.match(r"^AGENT_ACTIVITY:\s*([a-zA-Z0-9_-]+)(?:\s*\|\s*(.*))?$", line.strip())
+        if match:
+            return match.group(1), (match.group(2) or "").strip()
     return None

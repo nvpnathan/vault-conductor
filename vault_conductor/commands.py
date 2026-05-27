@@ -3,13 +3,15 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import sys
+from importlib import metadata
 from pathlib import Path
 from typing import Any
-
-import yaml
+from urllib.parse import unquote, urlparse
 
 from . import cmux
-from .agents import build_prompt, detect_agent_status, provider_command, template_variables
+from .activity import create_activity_timeline, record_activity
+from .agents import build_prompt, detect_agent_activity, detect_agent_status, provider_command, template_variables
 from .config import Config, config_to_yaml
 from .constants import BOARD_COLUMNS, TASK_STATUSES
 from .git_ops import (
@@ -55,42 +57,43 @@ DASHBOARD_NOTES = {
         "column": "Needs Human",
         "status": "needs-human",
         "commands": [
-            "uv run conductor status",
-            "uv run conductor log <TASK_ID> --tail 100",
-            'uv run conductor send <TASK_ID> "Answer or instruction" --status running',
-            "uv run conductor mark <TASK_ID> needs-revision",
+            "conductor status",
+            "conductor log <TASK_ID> --tail 100",
+            'conductor send <TASK_ID> "Answer or instruction" --status running',
+            "conductor mark <TASK_ID> needs-revision",
         ],
     },
     "Review Queue.md": {
         "column": "Review Diff",
         "status": "review-diff",
         "commands": [
-            "uv run conductor diff <TASK_ID> --stat --save",
-            "uv run conductor test <TASK_ID>",
-            'uv run conductor send <TASK_ID> "Requested revision" --status needs-revision',
-            "uv run conductor mark <TASK_ID> done --human",
+            "conductor diff <TASK_ID> --stat --save",
+            "conductor test <TASK_ID>",
+            "conductor pr <TASK_ID> --auto",
+            'conductor send <TASK_ID> "Requested revision" --status needs-revision',
+            "conductor mark <TASK_ID> done --human",
         ],
     },
     "Running Agents.md": {
         "column": "Running",
         "status": "running",
         "commands": [
-            "uv run conductor status",
-            "uv run conductor log <TASK_ID> --tail 100",
-            'uv run conductor send <TASK_ID> "Follow-up instruction"',
-            "uv run conductor mark <TASK_ID> review-diff",
-            "uv run conductor mark <TASK_ID> needs-human",
+            "conductor status",
+            "conductor log <TASK_ID> --tail 100",
+            'conductor send <TASK_ID> "Follow-up instruction"',
+            "conductor mark <TASK_ID> review-diff",
+            "conductor mark <TASK_ID> needs-human",
         ],
     },
     "Failed and Parked.md": {
         "column": "Failed / Parked",
         "status": "failed or parked",
         "commands": [
-            "uv run conductor status",
-            "uv run conductor log <TASK_ID> --tail 100",
-            'uv run conductor send <TASK_ID> "Recovery instruction" --status ready',
-            "uv run conductor start <TASK_ID>",
-            "uv run conductor cleanup <TASK_ID> --yes --dry-run",
+            "conductor status",
+            "conductor log <TASK_ID> --tail 100",
+            'conductor send <TASK_ID> "Recovery instruction" --status ready',
+            "conductor start <TASK_ID>",
+            "conductor cleanup <TASK_ID> --yes --dry-run",
         ],
     },
 }
@@ -104,10 +107,9 @@ Open the main board and inspect the `{note["column"]}` column.
 
 Tasks in this view use status `{note["status"]}`.
 
-Useful commands from `~/repos/vault-conductor`:
+Useful commands:
 
 ```bash
-cd ~/repos/vault-conductor
 {commands}
 ```
 """
@@ -117,7 +119,7 @@ def should_refresh_dashboard_note(path: Path, *, force: bool) -> bool:
     if force or not path.exists():
         return True
     text = path.read_text(encoding="utf-8")
-    return "agentctl" in text or "TABLE status, repo, agent" in text
+    return "agentctl" in text or "uv run conductor" in text or "TABLE status, repo, agent" in text
 
 
 def init_command(config: Config, *, force: bool = False, open_obsidian: bool | None = None) -> dict[str, str]:
@@ -299,9 +301,23 @@ def mark_task(config: Config, task_id: str, status: str, *, human: bool = False)
         session["status"] = status
         upsert_session(config, task_id, session)
         cmux.set_status(session["workspace_ref"], status)
+        notify_status_change(config, task_id, status, session["workspace_ref"])
         if session.get("run_id") and status in {"review-diff", "failed", "parked", "pr-opened", "done"}:
             update_run_frontmatter(config, session["run_id"], {"status": status, "ended": now_iso()})
     sync_project_notes(config)
+
+
+def notify_status_change(config: Config, task_id: str, status: str, workspace_ref: str) -> None:
+    if status == "needs-human":
+        cmux.notify(f"{task_id} needs human input", "The agent is waiting for a decision.", workspace_ref)
+    elif status == "review-diff":
+        cmux.notify(f"{task_id} ready for review", "Diff and test information are ready to inspect.", workspace_ref)
+    elif status == "failed":
+        cmux.notify(f"{task_id} failed", "The agent run failed and needs attention.", workspace_ref)
+    elif status == "pr-opened":
+        task = read_task_note(config, task_id)
+        body = task.frontmatter.pr_url or "Pull request opened."
+        cmux.notify(f"{task_id} PR opened", body, workspace_ref)
 
 
 def move_command(config: Config, task_id: str, column_or_status: str, *, human: bool = False) -> None:
@@ -362,6 +378,7 @@ def start_task(config: Config, task_id: str) -> dict[str, str]:
     task = read_task_note(config, task_id)
     ensure_worktree(config, task)
     run = create_run_note(config, task)
+    activity_path = create_activity_timeline(config, task, run)
     prompt = build_prompt(config, task, run)
     prompt_path = Path(run.frontmatter.prompt_file)
     prompt_path.parent.mkdir(parents=True, exist_ok=True)
@@ -381,6 +398,7 @@ def start_task(config: Config, task_id: str) -> dict[str, str]:
     surface_ref = cmux.terminal_surface(workspace_ref)
     cmux.markdown_open(task.abs_path, workspace_ref)
     cmux.markdown_open(run.abs_path, workspace_ref)
+    cmux.markdown_open(activity_path, workspace_ref)
     cmux.set_status(workspace_ref, "running")
 
     update_task_frontmatter(
@@ -410,6 +428,7 @@ def start_task(config: Config, task_id: str) -> dict[str, str]:
             "agent": task.frontmatter.agent,
             "worktree": task.frontmatter.worktree,
             "log_file": run.frontmatter.log_file,
+            "activity_file": str(activity_path),
             "status": "running",
             "cmux_command": cmux_command,
             "transcript_hash": "",
@@ -450,6 +469,10 @@ def send_command(config: Config, task_id: str, message: str, *, status: str | No
     if status:
         mark_task(config, task_id, status)
     return {"saved": True, "sent": bool(session), "message": message}
+
+
+def activity_command(config: Config, task_id: str, activity: str, *, detail: str = "") -> dict[str, Any]:
+    return record_activity(config, task_id, activity, detail=detail)
 
 
 def stop_task(config: Config, task_id: str, *, park: bool = False, kill: bool = False) -> str:
@@ -508,9 +531,7 @@ def diff_command(
 
 def test_command(config: Config, task_id: str) -> dict[str, Any]:
     task = read_task_note(config, task_id)
-    registry = load_repo_registry(config)
-    repo = next((entry for entry in registry.get("repos", []) if entry.get("name") == task.frontmatter.repo), {})
-    command = task.frontmatter.test_command or (repo.get("commands") or {}).get("test") or config.commands.get("default_test")
+    command = configured_test_command(config, task)
     if not command:
         raise ValueError(f"No test command configured for {task_id}.")
     log_file = config.logs_root / f"{task_id}-test.log"
@@ -523,6 +544,12 @@ def test_command(config: Config, task_id: str) -> dict[str, Any]:
     return {"exitCode": result.returncode, "command": command}
 
 
+def configured_test_command(config: Config, task) -> str:
+    registry = load_repo_registry(config)
+    repo = next((entry for entry in registry.get("repos", []) if entry.get("name") == task.frontmatter.repo), {})
+    return task.frontmatter.test_command or (repo.get("commands") or {}).get("test") or config.commands.get("default_test", "")
+
+
 def pr_command(
     config: Config,
     task_id: str,
@@ -530,8 +557,11 @@ def pr_command(
     commit: bool = False,
     yes: bool = False,
     force: bool = False,
+    auto: bool = False,
     dry_run: bool = False,
 ) -> str:
+    if auto:
+        return pr_handoff_command(config, task_id, force=force, dry_run=dry_run)
     task = read_task_note(config, task_id)
     if task.frontmatter.status not in {"review-diff", "needs-revision"} and not force:
         raise ValueError(f"Task {task_id} must be in review-diff before PR creation, or pass --force.")
@@ -565,7 +595,82 @@ def pr_command(
     return pr_url
 
 
-def pr_body(task) -> str:
+def pr_handoff_command(
+    config: Config,
+    task_id: str,
+    *,
+    force: bool = False,
+    dry_run: bool = False,
+) -> str:
+    task = read_task_note(config, task_id)
+    if task.frontmatter.status not in {"review-diff", "needs-revision"} and not force:
+        raise ValueError(f"Task {task_id} must be in review-diff before PR handoff, or pass --force.")
+    diff = get_diff_stat(task.frontmatter.worktree)
+    if not diff.strip():
+        raise ValueError(f"Task {task_id} has no diff to hand off.")
+
+    test_summary = "No test command configured. PR handoff is untested."
+    test_result = "untested"
+    test_command_text = configured_test_command(config, task)
+    if test_command_text:
+        result = test_command(config, task_id)
+        test_summary = f"Command: {result['command']}\nExit code: {result['exitCode']}"
+        if result["exitCode"] != 0:
+            notify_task(config, task_id, "Tests failed", f"{task_id} test command exited {result['exitCode']}.")
+            raise ValueError(f"Tests failed for {task_id}; PR was not created.")
+        test_result = "passed"
+    else:
+        replace_task_section(config, task_id, "Test output", test_summary)
+        update_task_frontmatter(config, task_id, {"last_test_status": test_result})
+
+    if dry_run:
+        return "dry-run"
+    if shutil.which("gh") is None:
+        raise ValueError("GitHub CLI `gh` is not available.")
+
+    run_git(["-C", task.frontmatter.worktree, "add", "-A"], check=True)
+    commit_result = run_git(["-C", task.frontmatter.worktree, "commit", "-m", f"{task_id}: {task.frontmatter.title}"])
+    if commit_result.returncode != 0:
+        raise RuntimeError(commit_result.stderr or commit_result.stdout or "git commit failed")
+    run_git(["-C", task.frontmatter.worktree, "push", "-u", "origin", task.frontmatter.branch], check=True)
+
+    task = read_task_note(config, task_id)
+    body_file = config.prompts_root / f"{task_id}-pr-body.md"
+    write_file_atomic(body_file, pr_body(task, test_summary=test_summary, test_result=test_result))
+    result = subprocess.run(
+        ["gh", "pr", "create", "--title", f"{task_id}: {task.frontmatter.title}", "--body-file", str(body_file)],
+        cwd=task.frontmatter.worktree,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    pr_url = result.stdout.strip()
+    update_task_frontmatter(config, task_id, {"pr_url": pr_url, "last_test_status": test_result})
+    replace_task_section(config, task_id, "Decision", f"PR opened: {pr_url}")
+    open_pr_in_workspace(config, task_id, pr_url)
+    mark_task(config, task_id, "pr-opened")
+    return pr_url
+
+
+def open_pr_in_workspace(config: Config, task_id: str, pr_url: str) -> None:
+    session = read_sessions(config).get("sessions", {}).get(task_id)
+    workspace_ref = session.get("workspace_ref") if session else None
+    if not workspace_ref:
+        return
+    cmux.open_browser_split(pr_url, workspace_ref)
+    cmux.select_workspace(workspace_ref)
+
+
+def notify_task(config: Config, task_id: str, title: str, body: str) -> None:
+    session = read_sessions(config).get("sessions", {}).get(task_id)
+    workspace_ref = session.get("workspace_ref") if session else None
+    cmux.notify(title, body, workspace_ref)
+
+
+def pr_body(task, *, test_summary: str | None = None, test_result: str | None = None) -> str:
+    test_text = test_summary or "See task note test output."
+    if test_result == "untested":
+        test_text = f"WARNING: {test_text}"
     return f"""## Agent Control Room Task
 
 Task: [[{task.path}]]
@@ -580,7 +685,7 @@ See task note diff summary.
 
 ## Tests
 
-See task note test output.
+{test_text}
 
 ## Human review checklist
 
@@ -625,6 +730,8 @@ def status_command(config: Config) -> dict[str, Any]:
                 "agent": task.frontmatter.agent,
                 "current_run": task.frontmatter.current_run,
                 "workspace_ref": task.frontmatter.workspace_ref,
+                "current_activity": task.frontmatter.current_activity,
+                "current_activity_detail": task.frontmatter.current_activity_detail,
             }
             for task in read_all_task_notes(config)
         ],
@@ -682,8 +789,29 @@ def doctor_command(config: Config, *, fix: bool = False) -> dict[str, Any]:
             command_check("claude", "claude"),
         ]
     )
+    provenance = cli_provenance()
+    checks.append(
+        {
+            "name": "conductor-cli",
+            "status": "OK" if provenance["executable"] else "WARN",
+            "message": (
+                f"conductor executable: {provenance['executable']}"
+                if provenance["executable"]
+                else "conductor executable not found on PATH"
+            ),
+        }
+    )
+    if provenance.get("directUrlEditable") is False:
+        checks.append(
+            {
+                "name": "conductor-editable",
+                "status": "WARN",
+                "message": "conductor package does not appear to be an editable install",
+            }
+        )
     return {
         "checks": checks,
+        "cli": provenance,
         "paths": {
             "vaultPath": str(config.vault_path),
             "reposRoot": str(config.repos_root),
@@ -694,6 +822,42 @@ def doctor_command(config: Config, *, fix: bool = False) -> dict[str, Any]:
             "stateRoot": str(config.state_root),
         },
     }
+
+
+def cli_provenance() -> dict[str, Any]:
+    package_root = Path(__file__).resolve().parents[1]
+    executable = shutil.which("conductor")
+    version = "unknown"
+    direct_url: dict[str, Any] = {}
+    try:
+        version = metadata.version("vault-conductor")
+        dist = metadata.distribution("vault-conductor")
+        raw_direct_url = dist.read_text("direct_url.json")
+        if raw_direct_url:
+            direct_url = json.loads(raw_direct_url)
+    except Exception:
+        pass
+    source_path = direct_url_source_path(direct_url)
+    return {
+        "executable": executable,
+        "packageVersion": version,
+        "pythonExecutable": sys.executable,
+        "modulePath": str(Path(__file__).resolve()),
+        "sourceCheckout": str(package_root),
+        "directUrlSource": str(source_path) if source_path else None,
+        "directUrlEditable": direct_url.get("dir_info", {}).get("editable") if direct_url else None,
+        "matchesCheckout": bool(source_path and source_path.resolve() == package_root.resolve()),
+    }
+
+
+def direct_url_source_path(direct_url: dict[str, Any]) -> Path | None:
+    url = direct_url.get("url")
+    if not isinstance(url, str) or not url.startswith("file:"):
+        return None
+    parsed = urlparse(url)
+    if parsed.netloc and parsed.netloc not in {"", "localhost"}:
+        return None
+    return Path(unquote(parsed.path)).expanduser()
 
 
 def exists_check(name: str, path: Path, message: str) -> dict[str, str]:
@@ -726,6 +890,13 @@ def sample_session_transcript(config: Config, task_id: str, session: dict[str, A
             handle.write(f"\n--- transcript snapshot {now_iso()} ---\n{text}\n")
         session["transcript_hash"] = digest
         upsert_session(config, task_id, session)
+    detected_activity = detect_agent_activity(text)
+    if detected_activity:
+        activity, detail = detected_activity
+        try:
+            record_activity(config, task_id, activity, detail=detail)
+        except ValueError:
+            pass
     detected = detect_agent_status(text)
     if detected:
         mark_task(config, task_id, detected)
