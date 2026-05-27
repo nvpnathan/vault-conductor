@@ -19,7 +19,7 @@ def fake_git_repo(tmp_path):
     repo = repos / "demo"
     repo.mkdir(parents=True)
     git(["init", "-b", "main"], repo)
-    git(["config", "user.email", "test@example.com"], repo)
+    git(["config", "user.email", "test.invalid"], repo)
     git(["config", "user.name", "Test User"], repo)
     (repo / "README.md").write_text("# demo\n", encoding="utf-8")
     git(["add", "README.md"], repo)

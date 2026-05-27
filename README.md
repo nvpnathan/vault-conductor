@@ -7,7 +7,7 @@
 Prerequisites: Python 3.10+, `uv`, Git, cmux, Obsidian with the Kanban plugin, and optionally `codex`, `claude`, and `gh`.
 
 ```bash
-git clone https://github.com/nvpnathan/vault-conductor
+git clone <vault-conductor-repo-url>
 cd vault-conductor
 bash setup.sh
 
@@ -24,6 +24,19 @@ Codex and Claude use cmux providers by default:
 - `claude`: `cmux claude-teams`
 
 Custom providers can be configured in `90 System/control-room.config.yml`.
+
+## Install the Codex Skill
+
+This repo includes an optional Codex skill for agents working with conductor-managed vaults.
+
+```bash
+cd vault-conductor
+mkdir -p "${CODEX_HOME:-$HOME/.codex}/skills"
+rm -rf "${CODEX_HOME:-$HOME/.codex}/skills/agent-control-room"
+cp -R skills/agent-control-room "${CODEX_HOME:-$HOME/.codex}/skills/"
+```
+
+Restart Codex after installing the skill so it is discovered in future sessions.
 
 ## Vault Layout
 

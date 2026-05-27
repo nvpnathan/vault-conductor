@@ -26,7 +26,13 @@ def watch_once(config: Config) -> None:
             and task.frontmatter.status != "running"
             and task.frontmatter.id not in sessions
         ):
-            start_task(config, task.frontmatter.id)
+            try:
+                start_task(config, task.frontmatter.id)
+            except Exception as error:
+                message = str(error)
+                update_task_frontmatter(config, task.frontmatter.id, {"last_error": message})
+                append_task_log(config, task.frontmatter.id, f"Failed to start task: {message}")
+                mark_task(config, task.frontmatter.id, "needs-human")
 
     sessions = read_sessions(config).get("sessions", {})
     for task_id, session in list(sessions.items()):

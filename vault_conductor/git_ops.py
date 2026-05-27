@@ -38,12 +38,21 @@ def remote_branch_exists(repo_path: Path | str, branch: str) -> bool:
     return run_git(["-C", str(repo_path), "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{branch}"]).returncode == 0
 
 
+def has_head_commit(repo_path: Path | str) -> bool:
+    return run_git(["-C", str(repo_path), "rev-parse", "--verify", "HEAD^{commit}"]).returncode == 0
+
+
 def ensure_worktree(config: Config, task: TaskNote) -> None:
     repo_path = Path(task.frontmatter.repo_path).expanduser().resolve()
     worktree_path = Path(task.frontmatter.worktree).expanduser().resolve()
     assert_inside(worktree_path, config.worktrees_root)
     if not is_git_repo(repo_path):
         raise ValueError(f"Cannot create worktree; not a git repository: {repo_path}")
+    if not has_head_commit(repo_path):
+        raise ValueError(
+            f"Cannot create worktree for {task.frontmatter.id}; repo has no commits: {repo_path}. "
+            "Create an initial commit before starting an agent task."
+        )
     if worktree_path.exists():
         if is_git_repo(worktree_path):
             return
