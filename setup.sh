@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VAULT="$REPO/Agent Control Room"
 
 echo "=== Agent Control Room Setup ==="

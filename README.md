@@ -49,7 +49,7 @@ PROJECTS = VAULT / "Projects"
 **1. Start the orchestrator** (keep it running in a terminal):
 
 ```bash
-python main.py
+uv run orchestrator
 ```
 
 **2. Open your vault in Obsidian** and navigate to the kanban board (`Control Room.md`).
@@ -90,15 +90,17 @@ priority: high
 A live dashboard of all active agents runs in the cmux Dock sidebar. To run it manually:
 
 ```bash
-python dashboard.py
+uv run dashboard
 ```
 
 ## Project Structure
 
 ```
 vault-conductor/
-├── main.py          # Kanban watcher + workspace spawner
-├── dashboard.py     # Live agent dashboard
+├── vault_conductor/
+│   ├── main.py      # Kanban watcher + workspace spawner
+│   └── dashboard.py # Live agent dashboard
+├── pyproject.toml
 └── setup.sh         # One-time setup script
 ```
 
