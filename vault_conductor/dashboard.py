@@ -1,32 +1,27 @@
-#!/usr/bin/env python3
-"""
-Control Room dashboard — runs in the cmux Dock sidebar.
-Refreshes every 3 seconds showing project status and recent notifications.
-"""
+from __future__ import annotations
 
 import json
 import subprocess
 import sys
 import time
-from pathlib import Path
 
-try:
-    import yaml
-except ImportError:
-    print("pip install pyyaml", flush=True)
-    sys.exit(1)
-
-VAULT = Path(__file__).parent.parent / "Agent Control Room"
-PROJECTS = VAULT / "Projects"
+from .config import load_config
+from .tasks import read_all_task_notes
 
 STATUS_ICON = {
     "backlog": "○",
     "ready": "◎",
-    "in_progress": "▶",
-    "needs_attention": "●",
-    "review": "◈",
+    "running": "▶",
+    "needs-human": "●",
+    "review-diff": "◈",
+    "needs-revision": "↻",
+    "pr-opened": "PR",
     "done": "✓",
+    "failed": "!",
+    "parked": "P",
 }
+
+ORDER = ["needs-human", "running", "review-diff", "needs-revision", "pr-opened", "ready", "backlog", "failed", "parked", "done"]
 
 DIM = "\033[90m"
 CYAN = "\033[36m"
@@ -41,104 +36,92 @@ CLEAR_SCREEN = "\033[H\033[2J\033[3J"
 STATUS_COLOR = {
     "backlog": DIM,
     "ready": CYAN,
-    "in_progress": BLUE,
-    "needs_attention": YELLOW,
-    "review": MAGENTA,
+    "running": BLUE,
+    "needs-human": YELLOW,
+    "review-diff": MAGENTA,
+    "needs-revision": YELLOW,
+    "pr-opened": MAGENTA,
     "done": GREEN,
+    "failed": YELLOW,
+    "parked": DIM,
 }
 
 
-def read_projects() -> list[dict]:
-    projects = []
-    for note in sorted(PROJECTS.glob("*.md")):
-        if note.name.startswith("."):
-            continue
-        try:
-            text = note.read_text(encoding="utf-8")
-            fm: dict = {}
-            if text.startswith("---"):
-                end = text.find("---", 3)
-                if end > 0:
-                    fm = yaml.safe_load(text[3:end]) or {}
-            projects.append({
-                "name": note.stem,
-                "status": fm.get("status") or "backlog",
-                "goal": fm.get("goal") or "",
-                "workspace_ref": fm.get("workspace_ref"),
-                "priority": fm.get("priority") or "medium",
-            })
-        except Exception as e:
-            print(f"[dashboard] error reading {note.name}: {e}", file=sys.stderr)
-
-    order = ["needs_attention", "in_progress", "review", "ready", "backlog", "done"]
-    projects.sort(key=lambda p: (order.index(p["status"]) if p["status"] in order else 99, p["name"]))
-    return projects
+def read_tasks():
+    config = load_config()
+    tasks = []
+    for note in read_all_task_notes(config):
+        task = note.frontmatter
+        tasks.append(
+            {
+                "id": task.id,
+                "title": task.title,
+                "status": task.status,
+                "repo": task.repo,
+                "agent": task.agent,
+                "workspace_ref": task.workspace_ref,
+                "current_run": task.current_run,
+            }
+        )
+    tasks.sort(key=lambda item: (ORDER.index(item["status"]) if item["status"] in ORDER else 99, item["id"]))
+    return tasks
 
 
 def read_notifications() -> list[dict]:
     try:
-        r = subprocess.run(
-            ["cmux", "--json", "list-notifications"],
-            capture_output=True, text=True, timeout=3,
-        )
-        if r.returncode == 0 and r.stdout:
-            return json.loads(r.stdout).get("notifications", [])
-    except Exception as e:
-        print(f"[dashboard] error reading notifications: {e}", file=sys.stderr)
+        result = subprocess.run(["cmux", "--json", "list-notifications"], capture_output=True, text=True, timeout=3)
+        if result.returncode == 0 and result.stdout:
+            return json.loads(result.stdout).get("notifications", [])
+    except Exception:
+        return []
     return []
 
 
-def truncate(s: str, n: int) -> str:
-    return s[:n - 1] + "…" if len(s) > n else s
+def truncate(value: str, length: int) -> str:
+    return f"{value[: length - 1]}..." if len(value) > length else value
 
 
-def render(projects: list[dict], notifications: list[dict]) -> str:
-    w = 46
+def render(tasks: list[dict], notifications: list[dict]) -> str:
+    width = 54
     lines = [
         f"{BOLD}Agent Control Room{RESET}  {DIM}{time.strftime('%H:%M:%S')}{RESET}",
-        "─" * w,
+        "-" * width,
     ]
-
-    if not projects:
-        lines.append(f"{DIM}  No projects yet — add a note to Projects/{RESET}")
+    if not tasks:
+        lines.append(f"{DIM}  No tasks yet. Use conductor new.{RESET}")
     else:
-        for p in projects:
-            status = p["status"]
+        for task in tasks:
+            status = task["status"]
             icon = STATUS_ICON.get(status, "?")
             color = STATUS_COLOR.get(status, "")
-            goal = truncate(p["goal"], 30) if p["goal"] else DIM + "(no goal)" + RESET
-            ws = f" {DIM}[{p['workspace_ref']}]{RESET}" if p["workspace_ref"] else ""
-            lines.append(f"  {color}{icon}{RESET} {BOLD}{p['name']}{RESET}{ws}")
-            lines.append(f"    {DIM}{goal}{RESET}")
+            ws = f" {DIM}[{task['workspace_ref']}]{RESET}" if task.get("workspace_ref") else ""
+            title = truncate(task["title"], 32)
+            lines.append(f"  {color}{icon}{RESET} {BOLD}{task['id']}{RESET} {title}{ws}")
+            lines.append(f"    {DIM}{task['repo']} · {task['agent']} · {status}{RESET}")
             lines.append("")
-
     if notifications:
-        lines.append("─" * w)
-        lines.append(f"{BOLD}Notifications{RESET}  {DIM}(Cmd+Shift+U to jump){RESET}")
-        lines.append("")
-        for n in notifications[:5]:
-            title = n.get("title", "")
-            body = truncate(n.get("body") or "", 36)
-            read_marker = f"{DIM}·{RESET}" if n.get("read") else f"{YELLOW}•{RESET}"
-            lines.append(f"  {read_marker} {title}")
+        lines.append("-" * width)
+        lines.append(f"{BOLD}Notifications{RESET}")
+        for notification in notifications[:5]:
+            title = truncate(notification.get("title", ""), 44)
+            body = truncate(notification.get("body") or "", 44)
+            lines.append(f"  {YELLOW if not notification.get('read') else DIM}•{RESET} {title}")
             if body:
                 lines.append(f"    {DIM}{body}{RESET}")
-        lines.append("")
-
-    lines.append(f"{DIM}uv run orchestrator to start watcher{RESET}")
+    lines.append(f"{DIM}conductor watch to start watcher{RESET}")
     return "\n".join(lines)
 
 
 def main():
     while True:
         try:
-            projects = read_projects()
-            notifications = read_notifications()
-            output = render(projects, notifications)
+            output = render(read_tasks(), read_notifications())
             sys.stdout.write(CLEAR_SCREEN + output + "\n")
             sys.stdout.flush()
-        except Exception as e:
-            sys.stdout.write(f"Error: {e}\n")
+        except KeyboardInterrupt:
+            raise
+        except Exception as error:
+            sys.stdout.write(f"Error: {error}\n")
             sys.stdout.flush()
         time.sleep(3)
 

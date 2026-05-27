@@ -8,8 +8,7 @@ dependencies = [
 ]
 
 [project.scripts]
-orchestrator = "vault_conductor.main:main"
-dashboard = "vault_conductor.dashboard:main"
+conductor = "vault_conductor.cli:main"
 
 [tool.uv]
 package = true
@@ -17,6 +16,11 @@ package = true
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["vault_conductor"]
