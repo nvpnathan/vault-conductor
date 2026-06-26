@@ -440,6 +440,7 @@ def pr_handoff_command(
         result = test_command(config, task_id)
         test_summary = f"Command: {result['command']}\nExit code: {result['exitCode']}"
         if result["exitCode"] != 0:
+            capture_pr_failure_artifact(config, task_id, test_summary=test_summary)
             notify_task(config, task_id, "Tests failed", f"{task_id} test command exited {result['exitCode']}.")
             raise ValueError(f"Tests failed for {task_id}; PR was not created.")
         test_result = "passed"
@@ -491,6 +492,40 @@ def open_pr_in_workspace(config: Config, task_id: str, pr_url: str) -> None:
         open_browser=True,
     )
     cmux.present_handoff(layout, pr_url=pr_url, focus_policy=focus_policy)
+
+
+def capture_pr_failure_artifact(config: Config, task_id: str, *, test_summary: str) -> Path:
+    task = read_task_note(config, task_id)
+    sessions = read_sessions(config).get("sessions", {})
+    layout = cmux.CmuxWorkspaceLayout.from_session(sessions.get(task_id))
+    artifact_path = review_artifact_path(config, task_id, task.frontmatter.branch, "pr-failure")
+    evidence = {
+        "task": task_id,
+        "title": task.frontmatter.title,
+        "status": "Tests failed",
+        "test": test_summary,
+        "test_log": str(config.logs_root / f"{task_id}-test.log"),
+        "worktree": task.frontmatter.worktree,
+        "branch": task.frontmatter.branch,
+    }
+    path = cmux.capture_review_artifact(
+        artifact_path,
+        title=f"{task_id} Tests failed",
+        evidence=evidence,
+        layout=layout if layout.workspace_ref else None,
+        policy=cmux.CmuxHITLPolicy.non_disruptive(),
+    )
+    append_task_log(config, task_id, f"Review artifact captured: {path}")
+    return path
+
+
+def review_artifact_path(config: Config, task_id: str, branch: str | None, suffix: str) -> Path:
+    return config.state_root.parent / "cmux-assets" / safe_path_slug(branch or task_id) / f"{task_id}-{suffix}.html"
+
+
+def safe_path_slug(value: str) -> str:
+    slug = "".join(char if char.isalnum() or char in {"-", "_", "."} else "-" for char in value)
+    return slug.strip("-") or "task"
 
 
 def notify_task(config: Config, task_id: str, title: str, body: str) -> None:
@@ -641,9 +676,12 @@ def doctor_command(config: Config, *, fix: bool = False) -> dict[str, Any]:
                 "message": "conductor package does not appear to be an editable install",
             }
         )
+    cmux_details = inspect_cmux_runtime(config)
+    checks.extend(cmux_details.pop("checks"))
     return {
         "checks": checks,
         "cli": provenance,
+        "cmux": cmux_details,
         "paths": {
             "vaultPath": str(config.vault_path),
             "reposRoot": str(config.repos_root),
@@ -654,6 +692,103 @@ def doctor_command(config: Config, *, fix: bool = False) -> dict[str, Any]:
             "stateRoot": str(config.state_root),
         },
     }
+
+
+def inspect_cmux_runtime(config: Config) -> dict[str, Any]:
+    checks: list[dict[str, str]] = []
+    details: dict[str, Any] = {
+        "capabilities": {},
+        "identify": {},
+        "socketPath": None,
+        "sessions": [],
+        "checks": checks,
+    }
+    adapter = cmux.CmuxAdapter()
+    try:
+        capabilities = adapter.capabilities()
+        details["capabilities"] = capabilities.raw
+        checks.append(
+            {
+                "name": "cmux-capabilities",
+                "status": "OK" if capabilities.raw else "WARN",
+                "message": (
+                    f"Discovered {len(capabilities.commands)} cmux commands"
+                    if capabilities.raw
+                    else "cmux capabilities returned no JSON"
+                ),
+            }
+        )
+    except Exception as error:
+        checks.append({"name": "cmux-capabilities", "status": "WARN", "message": str(error)})
+    try:
+        target = adapter.identify()
+        identify = {
+            key: value
+            for key, value in {
+                "workspace_ref": target.workspace_ref,
+                "workspace_id": target.workspace_id,
+                "pane_ref": target.pane_ref,
+                "pane_id": target.pane_id,
+                "surface_ref": target.surface_ref,
+                "surface_id": target.surface_id,
+                "socket_path": target.socket_path,
+            }.items()
+            if value
+        }
+        details["identify"] = identify
+        details["socketPath"] = target.socket_path
+        checks.append(
+            {
+                "name": "cmux-identify",
+                "status": "OK" if identify else "WARN",
+                "message": f"cmux socket: {target.socket_path}" if target.socket_path else "cmux identify returned no target",
+            }
+        )
+    except Exception as error:
+        checks.append({"name": "cmux-identify", "status": "WARN", "message": str(error)})
+    runtime = cmux.CmuxRuntimeState.load(config)
+    live_workspace_refs: set[str] | None = None
+    try:
+        live_workspace_refs = {
+            str(workspace.get("ref") or workspace.get("id"))
+            for workspace in adapter.list_workspaces()
+            if workspace.get("ref") or workspace.get("id")
+        }
+        details["liveWorkspaces"] = sorted(live_workspace_refs)
+    except Exception as error:
+        details["liveWorkspaces"] = []
+        checks.append({"name": "cmux-session-refs", "status": "WARN", "message": str(error)})
+    details["sessions"] = [
+        {
+            "task_id": session.task_id,
+            "run_id": session.run_id,
+            "status": session.status,
+            "workspace_ref": session.workspace_ref,
+            "surface_ref": session.surface_ref,
+            "surfaces": dict(session.layout.surfaces),
+            "workspace_exists": (
+                session.workspace_ref in live_workspace_refs
+                if live_workspace_refs is not None and session.workspace_ref
+                else None
+            ),
+        }
+        for session in runtime.sessions.values()
+    ]
+    if not any(check["name"] == "cmux-session-refs" for check in checks):
+        stale_count = sum(1 for session in details["sessions"] if session["workspace_exists"] is False)
+        checks.append(
+            {
+                "name": "cmux-session-refs",
+                "status": "WARN" if stale_count else "OK",
+                "message": (
+                    f"{stale_count} tracked sessions point at missing cmux workspaces"
+                    if stale_count
+                    else f"{len(runtime.sessions)} tracked sessions have live cmux workspace refs"
+                ),
+            }
+        )
+    checks.append({"name": "cmux-sessions", "status": "OK", "message": f"{len(runtime.sessions)} live conductor sessions tracked"})
+    return details
 
 
 def cli_provenance() -> dict[str, Any]:

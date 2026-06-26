@@ -217,6 +217,60 @@ class CmuxWorkspaceLayout:
         )
 
 
+@dataclass(frozen=True)
+class CmuxSession:
+    task_id: str
+    run_id: str | None
+    status: str | None
+    layout: CmuxWorkspaceLayout
+    raw: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def workspace_ref(self) -> str | None:
+        return self.layout.workspace_ref
+
+    @property
+    def surface_ref(self) -> str | None:
+        return self.layout.agent_surface_ref
+
+    @classmethod
+    def from_record(cls, task_id: str, record: Mapping[str, Any]) -> CmuxSession:
+        return cls(
+            task_id=str(record.get("task_id") or task_id),
+            run_id=_first_str(record.get("run_id")),
+            status=_first_str(record.get("status")),
+            layout=CmuxWorkspaceLayout.from_session(record),
+            raw=dict(record),
+        )
+
+
+@dataclass(frozen=True)
+class CmuxRuntimeState:
+    sessions: dict[str, CmuxSession] = field(default_factory=dict)
+
+    @classmethod
+    def from_sessions_data(cls, data: Mapping[str, Any] | None) -> CmuxRuntimeState:
+        session_data = _mapping((data or {}).get("sessions"))
+        return cls(
+            sessions={
+                str(task_id): CmuxSession.from_record(str(task_id), _mapping(record))
+                for task_id, record in session_data.items()
+            }
+        )
+
+    @classmethod
+    def load(cls, config: Any) -> CmuxRuntimeState:
+        from .sessions import read_sessions
+
+        return cls.from_sessions_data(read_sessions(config))
+
+    def workspace_refs(self) -> set[str]:
+        return {session.workspace_ref for session in self.sessions.values() if session.workspace_ref}
+
+    def find_by_workspace(self, workspace_ref: str) -> CmuxSession | None:
+        return next((session for session in self.sessions.values() if session.workspace_ref == workspace_ref), None)
+
+
 class CmuxAdapter:
     def __init__(
         self,

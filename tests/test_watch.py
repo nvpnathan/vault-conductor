@@ -5,7 +5,7 @@ import pytest
 from vault_conductor.commands import init_command, new_task_command
 from vault_conductor.sessions import read_sessions, write_sessions
 from vault_conductor.tasks import read_task_note, update_task_frontmatter
-from vault_conductor.watch import reconcile_closed_workspaces, watch_forever, watch_once
+from vault_conductor.watch import reconcile_closed_workspaces, repair_stale_sessions, watch_forever, watch_once
 
 from conftest import cmux_calls
 from test_commands import move_card_only_on_board, write_registry
@@ -130,6 +130,52 @@ def test_closed_workspace_while_task_still_running_moves_to_needs_human(config, 
     assert "workspace workspace:9 closed while task was still running" in (
         config.tasks_dir / "AGT-0001 Workspace closed.md"
     ).read_text(encoding="utf-8")
+
+
+def test_repair_stale_sessions_returns_repair_details_and_removes_layout(config, fake_git_repo):
+    init_command(config, open_obsidian=False)
+    write_registry(config, fake_git_repo)
+    created = new_task_command(config, repo="demo", title="Repair stale layout", status="ready")
+    update_task_frontmatter(config, created["id"], {"status": "running", "workspace_ref": "workspace:9", "surface_ref": "surface:10"})
+    write_sessions(
+        config,
+        {
+            "version": 1,
+            "sessions": {
+                created["id"]: {
+                    "task_id": created["id"],
+                    "run_id": "AGT-0001-RUN-001",
+                    "workspace_ref": "workspace:9",
+                    "surface_ref": "surface:10",
+                    "agent": "codex",
+                    "worktree": str(config.worktrees_root / "demo" / created["id"]),
+                    "log_file": str(config.logs_root / "AGT-0001-RUN-001.log"),
+                    "status": "running",
+                    "transcript_hash": "",
+                    "cmux_layout": {
+                        "workspace_ref": "workspace:9",
+                        "surfaces": {
+                            "agent": "surface:10",
+                            "run_note": "surface:11",
+                        },
+                    },
+                }
+            },
+        },
+    )
+
+    repairs = repair_stale_sessions(config, live_workspace_refs=set())
+
+    assert len(repairs) == 1
+    assert repairs[0].task_id == created["id"]
+    assert repairs[0].workspace_ref == "workspace:9"
+    assert repairs[0].reason == "workspace-missing"
+    assert repairs[0].was_running is True
+    task = read_task_note(config, created["id"]).frontmatter
+    assert task.status == "needs-human"
+    assert task.workspace_ref is None
+    assert task.surface_ref is None
+    assert read_sessions(config)["sessions"] == {}
 
 
 def test_reconcile_keeps_session_when_workspace_list_temporarily_misses_live_workspace(config, fake_git_repo, monkeypatch):

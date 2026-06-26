@@ -16,7 +16,7 @@ from vault_conductor.commands import (
     sync_command,
 )
 from vault_conductor.kanban import find_card, parse_board, render_board
-from vault_conductor.sessions import read_sessions
+from vault_conductor.sessions import read_sessions, write_sessions
 from vault_conductor.tasks import read_task_note
 
 from conftest import cmux_calls, git
@@ -409,10 +409,22 @@ def test_auto_pr_handoff_stops_when_tests_fail(config, fake_git_repo, fake_cmux,
 
     task = read_task_note(config, created["id"])
     calls = cmux_calls(fake_cmux)
+    artifacts = list((config.state_root.parent / "cmux-assets").rglob("*pr-failure.html"))
     assert task.frontmatter.status == "review-diff"
     assert task.frontmatter.pr_url is None
     assert task.frontmatter.last_test_status == "failed"
+    assert len(artifacts) == 1
+    artifact_html = artifacts[0].read_text(encoding="utf-8")
+    assert "Tests failed" in artifact_html
+    assert "AGT-0001" in artifact_html
+    assert "Exit code: 3" in artifact_html
     assert any(call[:2] == ["notify", "--title"] and "Tests failed" in call for call in calls)
+    assert any(
+        call[:4] == ["new-pane", "--type", "browser", "--direction"]
+        and "file://" in " ".join(call)
+        and call[-2:] == ["--focus", "false"]
+        for call in calls
+    )
 
 
 def test_start_waits_for_codex_before_sending_prompt_instruction(config, fake_git_repo, fake_cmux, monkeypatch):
@@ -460,11 +472,51 @@ def test_doctor_json_reports_cmux_and_runtime_dirs(config, fake_cmux):
     assert checks["board"] == "OK"
     assert checks["columns"] == "OK"
     assert checks["cmux"] == "OK"
+    assert checks["cmux-capabilities"] == "OK"
+    assert checks["cmux-identify"] == "OK"
     assert "conductor-cli" in checks
     assert "packageVersion" in result["cli"]
     assert "modulePath" in result["cli"]
+    assert "new-workspace" in result["cmux"]["capabilities"]["commands"]
+    assert result["cmux"]["identify"]["workspace_ref"] == "workspace:1"
+    assert result["cmux"]["socketPath"] == "/tmp/fake-cmux.sock"
     assert result["paths"]["stateRoot"] == str(config.state_root)
     json.dumps(result)
+
+
+def test_doctor_reports_stale_cmux_session_refs(config, fake_cmux):
+    init_command(config, open_obsidian=False)
+    write_sessions(
+        config,
+        {
+            "version": 1,
+            "sessions": {
+                "AGT-9999": {
+                    "task_id": "AGT-9999",
+                    "run_id": "AGT-9999-RUN-001",
+                    "workspace_ref": "workspace:999",
+                    "surface_ref": "surface:999",
+                    "status": "running",
+                }
+            },
+        },
+    )
+
+    result = doctor_command(config, fix=True)
+    checks = {check["name"]: check["status"] for check in result["checks"]}
+
+    assert checks["cmux-session-refs"] == "WARN"
+    assert result["cmux"]["sessions"] == [
+        {
+            "task_id": "AGT-9999",
+            "run_id": "AGT-9999-RUN-001",
+            "status": "running",
+            "workspace_ref": "workspace:999",
+            "surface_ref": "surface:999",
+            "surfaces": {"agent": "surface:999"},
+            "workspace_exists": False,
+        }
+    ]
 
 
 def move_card_only_on_board(config, task_id: str, column: str):

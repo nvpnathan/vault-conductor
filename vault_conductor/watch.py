@@ -7,6 +7,7 @@ import sys
 import time
 import traceback
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 
 from . import cmux
 from .commands import mark_task, read_board, sample_session_transcript, start_task
@@ -17,6 +18,14 @@ from .tasks import append_task_log, now_iso, read_all_task_notes, update_task_fr
 
 
 WatchLog = Callable[[str], None]
+
+
+@dataclass(frozen=True)
+class CmuxSessionRepair:
+    task_id: str
+    workspace_ref: str | None
+    reason: str
+    was_running: bool
 
 
 def stderr_watch_log(message: str) -> None:
@@ -87,7 +96,7 @@ def watch_once(config: Config, *, log: WatchLog | None = None, verbose: bool = F
             log(f"transcript unchanged task={task_id} workspace={workspace_ref}")
 
 
-def reconcile_closed_workspaces(config: Config, live_workspace_refs: Iterable[str] | None = None) -> list[str]:
+def repair_stale_sessions(config: Config, live_workspace_refs: Iterable[str] | None = None) -> list[CmuxSessionRepair]:
     verify_missing = live_workspace_refs is None
     if live_workspace_refs is None:
         live_workspace_refs = {
@@ -96,10 +105,10 @@ def reconcile_closed_workspaces(config: Config, live_workspace_refs: Iterable[st
             if workspace.get("ref") or workspace.get("id")
         }
     live = set(live_workspace_refs)
-    changed: list[str] = []
-    sessions = read_sessions(config).get("sessions", {})
-    for task_id, session in list(sessions.items()):
-        workspace_ref = session.get("workspace_ref")
+    repairs: list[CmuxSessionRepair] = []
+    runtime = cmux.CmuxRuntimeState.load(config)
+    for task_id, session in list(runtime.sessions.items()):
+        workspace_ref = session.workspace_ref
         if workspace_ref and workspace_ref in live:
             continue
         if verify_missing and workspace_ref and cmux.workspace_exists(workspace_ref):
@@ -110,13 +119,25 @@ def reconcile_closed_workspaces(config: Config, live_workspace_refs: Iterable[st
         except Exception:
             remove_session(config, task_id)
             continue
+        was_running = task == "running"
         if task == "running":
             mark_task(config, task_id, "needs-human")
             append_task_log(config, task_id, f"workspace {workspace_ref} closed while task was still running; needs human reconciliation.")
-            changed.append(task_id)
+        repairs.append(
+            CmuxSessionRepair(
+                task_id=task_id,
+                workspace_ref=workspace_ref,
+                reason="workspace-missing",
+                was_running=was_running,
+            )
+        )
         update_task_frontmatter(config, task_id, {"workspace_ref": None, "surface_ref": None})
         remove_session(config, task_id)
-    return changed
+    return repairs
+
+
+def reconcile_closed_workspaces(config: Config, live_workspace_refs: Iterable[str] | None = None) -> list[str]:
+    return [repair.task_id for repair in repair_stale_sessions(config, live_workspace_refs=live_workspace_refs) if repair.was_running]
 
 
 def read_task_status(config: Config, task_id: str) -> str:

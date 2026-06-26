@@ -189,6 +189,7 @@ else:
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
     monkeypatch.setenv("FAKE_CMUX_CALLS", str(calls_file))
     monkeypatch.setenv("FAKE_CMUX_WORKSPACES", str(workspaces_file))
+    monkeypatch.delenv("CMUX_SOCKET_PATH", raising=False)
     return calls_file
 
 

@@ -1,5 +1,11 @@
 from vault_conductor import cmux
-from vault_conductor.cmux import CmuxAdapter, CmuxHITLPolicy, CmuxTarget, CmuxWorkspaceLayout
+from vault_conductor.cmux import (
+    CmuxAdapter,
+    CmuxHITLPolicy,
+    CmuxRuntimeState,
+    CmuxTarget,
+    CmuxWorkspaceLayout,
+)
 
 from conftest import cmux_calls
 
@@ -80,6 +86,41 @@ def test_workspace_layout_round_trips_session_patch_and_legacy_records():
     assert legacy.agent_surface_ref == "surface:7"
 
 
+def test_runtime_state_loads_session_layouts_and_indexes_workspaces():
+    state = CmuxRuntimeState.from_sessions_data(
+        {
+            "version": 1,
+            "sessions": {
+                "AGT-0001": {
+                    "task_id": "AGT-0001",
+                    "run_id": "AGT-0001-RUN-001",
+                    "workspace_ref": "workspace:1",
+                    "surface_ref": "surface:1",
+                    "status": "running",
+                    "cmux_layout": {
+                        "workspace_ref": "workspace:1",
+                        "workspace_id": "workspace-id-1",
+                        "surfaces": {
+                            "agent": "surface:1",
+                            "run_note": "surface:2",
+                            "task_note": "surface:3",
+                        },
+                    },
+                }
+            },
+        }
+    )
+
+    session = state.sessions["AGT-0001"]
+    assert session.task_id == "AGT-0001"
+    assert session.run_id == "AGT-0001-RUN-001"
+    assert session.workspace_ref == "workspace:1"
+    assert session.layout.workspace_id == "workspace-id-1"
+    assert session.layout.agent_surface_ref == "surface:1"
+    assert state.workspace_refs() == {"workspace:1"}
+    assert state.find_by_workspace("workspace:1") == session
+
+
 def test_legacy_module_wrappers_keep_existing_shapes(fake_cmux):
     assert cmux.ping() is True
     assert cmux.cmux_json("identify")["workspace_ref"] == "workspace:1"
@@ -111,3 +152,15 @@ def test_adapter_captures_review_artifact_without_stealing_focus(fake_cmux, tmp_
     assert calls[-1][:4] == ["new-pane", "--type", "browser", "--direction"]
     assert "file://" in " ".join(calls[-1])
     assert calls[-1][-2:] == ["--focus", "false"]
+
+
+def test_present_handoff_respects_non_disruptive_focus_policy(fake_cmux):
+    adapter = CmuxAdapter()
+    layout = CmuxWorkspaceLayout(workspace_ref="workspace:1", surfaces={"agent": "surface:1"})
+
+    adapter.present_handoff(layout, pr_url="https://github.test/demo/pull/1")
+
+    calls = cmux_calls(fake_cmux)
+    assert any(call[:4] == ["new-pane", "--type", "browser", "--direction"] for call in calls)
+    assert not any(call[:1] == ["select-workspace"] for call in calls)
+    assert not any("--focus" in call and call[call.index("--focus") + 1] == "true" for call in calls)
