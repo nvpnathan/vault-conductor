@@ -1,11 +1,15 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any
 
 from . import cmux
+from .activity import create_activity_timeline
+from .agents import build_prompt, provider_command, template_variables
 from .config import Config
 from .constants import BOARD_COLUMNS, TASK_STATUSES
+from .git_ops import ensure_worktree
 from .kanban import (
     build_card_line,
     empty_board_content,
@@ -17,8 +21,8 @@ from .kanban import (
 )
 from .operational_log import append_operational_log
 from .repos import sync_project_notes
-from .run_notes import update_run_frontmatter
-from .sessions import read_sessions, upsert_session
+from .run_notes import create_run_note, update_run_frontmatter
+from .sessions import read_sessions, remove_session, upsert_session
 from .tasks import (
     append_task_log,
     read_all_task_notes,
@@ -37,6 +41,29 @@ class StatusTransition:
     actor: str
     source: str
     changed: bool
+
+
+@dataclass(frozen=True)
+class RunStartResult:
+    task_id: str
+    run_id: str
+    log_file: str
+    prompt_file: str
+    workspace_ref: str
+    status: str
+
+    def to_dict(self) -> dict[str, str]:
+        data = asdict(self)
+        data.pop("task_id", None)
+        return data
+
+
+@dataclass(frozen=True)
+class StopTaskResult:
+    task_id: str
+    run_id: str | None
+    workspace_ref: str | None
+    status: str
 
 
 class ConductorEngine:
@@ -98,6 +125,110 @@ class ConductorEngine:
             actor=actor,
             source=source,
             changed=before.frontmatter.status != after.frontmatter.status,
+        )
+
+    def start_task(self, task_id: str) -> RunStartResult:
+        sessions = read_sessions(self.config)
+        if task_id in sessions.get("sessions", {}):
+            raise ValueError(f"Task {task_id} already has a live session")
+        task = read_task_note(self.config, task_id)
+        ensure_worktree(self.config, task)
+        run = create_run_note(self.config, task)
+        activity_path = create_activity_timeline(self.config, task, run)
+        prompt = build_prompt(self.config, task, run)
+        prompt_path = Path(run.frontmatter.prompt_file)
+        prompt_path.parent.mkdir(parents=True, exist_ok=True)
+        prompt_path.write_text(prompt, encoding="utf-8")
+        Path(run.frontmatter.log_file).parent.mkdir(parents=True, exist_ok=True)
+        Path(run.frontmatter.log_file).write_text("", encoding="utf-8")
+
+        variables = template_variables(self.config, task, run, prompt)
+        cmux_command, _env = provider_command(self.config, task.frontmatter.agent, variables)
+        workspace_ref = cmux.new_workspace(
+            name=task.frontmatter.id,
+            description=task.frontmatter.title,
+            cwd=task.frontmatter.worktree,
+            command=cmux_command,
+            focus=False,
+        )
+        surface_ref = cmux.terminal_surface(workspace_ref)
+        run_surface_ref = cmux.markdown_open(run.abs_path, workspace_ref, surface_ref=surface_ref, direction="right")
+        cmux.markdown_open(task.abs_path, workspace_ref, surface_ref=run_surface_ref or surface_ref, direction="down")
+        cmux.set_status(workspace_ref, "running")
+
+        update_task_frontmatter(
+            self.config,
+            task_id,
+            {
+                "current_run": run.frontmatter.id,
+                "run_count": task.frontmatter.run_count + 1,
+                "workspace_ref": workspace_ref,
+                "surface_ref": surface_ref,
+                "cmux_command": cmux_command,
+            },
+        )
+        update_run_frontmatter(
+            self.config,
+            run.frontmatter.id,
+            {"workspace_ref": workspace_ref, "surface_ref": surface_ref, "cmux_command": cmux_command},
+        )
+        upsert_session(
+            self.config,
+            task_id,
+            {
+                "task_id": task_id,
+                "run_id": run.frontmatter.id,
+                "workspace_ref": workspace_ref,
+                "surface_ref": surface_ref,
+                "agent": task.frontmatter.agent,
+                "worktree": task.frontmatter.worktree,
+                "log_file": run.frontmatter.log_file,
+                "activity_file": str(activity_path),
+                "status": "running",
+                "cmux_command": cmux_command,
+                "transcript_hash": "",
+            },
+        )
+        self.set_task_status(task_id, "running", actor="conductor", source="start")
+        append_task_log(self.config, task_id, f"Agent started in `{workspace_ref}` with `{cmux_command}`.")
+        instruction = (
+            f"Please read the prompt file at {prompt_path} and follow it. "
+            "Update the task status to review-diff, needs-human, or failed; if you cannot edit the note, print AGENT_STATUS."
+        )
+        if "codex" in cmux_command.lower() and not cmux.wait_for_screen_text(workspace_ref, surface_ref, "OpenAI Codex"):
+            append_task_log(self.config, task_id, "Timed out waiting for Codex; sending prompt instruction anyway.")
+        cmux.send(workspace_ref, instruction, surface_ref=surface_ref)
+        cmux.send_enter(workspace_ref, surface_ref=surface_ref)
+        return RunStartResult(
+            task_id=task_id,
+            run_id=run.frontmatter.id,
+            log_file=run.frontmatter.log_file,
+            prompt_file=run.frontmatter.prompt_file,
+            workspace_ref=workspace_ref,
+            status="running",
+        )
+
+    def stop_task(self, task_id: str, *, park: bool = False, kill: bool = False) -> StopTaskResult:
+        session = read_sessions(self.config).get("sessions", {}).get(task_id)
+        if not session:
+            raise ValueError(f"No live session found for {task_id}")
+        workspace_ref = session.get("workspace_ref")
+        if workspace_ref:
+            cmux.close_workspace(workspace_ref)
+        status = "parked" if park else "failed"
+        run_id = session.get("run_id")
+        if run_id:
+            from .tasks import now_iso
+
+            update_run_frontmatter(self.config, run_id, {"status": status, "ended": now_iso(), "exit_code": -15})
+        self.set_task_status(task_id, status, actor="conductor", source="stop")
+        update_task_frontmatter(self.config, task_id, {"workspace_ref": None, "surface_ref": None})
+        remove_session(self.config, task_id)
+        return StopTaskResult(
+            task_id=task_id,
+            run_id=run_id,
+            workspace_ref=workspace_ref,
+            status=status,
         )
 
     def sync_board(self, *, board_wins: bool = False) -> dict[str, int]:

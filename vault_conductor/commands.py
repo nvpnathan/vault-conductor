@@ -10,8 +10,8 @@ from typing import Any
 from urllib.parse import unquote, urlparse
 
 from . import cmux
-from .activity import create_activity_timeline, record_activity
-from .agents import build_prompt, detect_agent_activity, detect_agent_status, provider_command, template_variables
+from .activity import record_activity
+from .agents import detect_agent_activity, detect_agent_status
 from .config import Config, config_to_yaml
 from .constants import BOARD_COLUMNS, TASK_STATUSES
 from .engine import ConductorEngine
@@ -37,7 +37,7 @@ from .kanban import (
 )
 from .markdown import write_file_atomic
 from .repos import RepoEntry, find_repo, load_repo_registry, registry_path, scan_repos, sync_project_notes
-from .run_notes import append_run_followup, create_run_note, update_run_frontmatter
+from .run_notes import append_run_followup, update_run_frontmatter
 from .sessions import read_sessions, remove_session, transcript_hash, upsert_session
 from .tasks import (
     append_task_log,
@@ -50,7 +50,6 @@ from .tasks import (
     status_to_column,
     update_task_frontmatter,
 )
-from .git_ops import ensure_worktree
 
 
 DASHBOARD_NOTES = {
@@ -298,84 +297,7 @@ def sync_command(config: Config, *, board_wins: bool = False) -> dict[str, int]:
 
 
 def start_task(config: Config, task_id: str) -> dict[str, str]:
-    sessions = read_sessions(config)
-    if task_id in sessions.get("sessions", {}):
-        raise ValueError(f"Task {task_id} already has a live session")
-    task = read_task_note(config, task_id)
-    ensure_worktree(config, task)
-    run = create_run_note(config, task)
-    activity_path = create_activity_timeline(config, task, run)
-    prompt = build_prompt(config, task, run)
-    prompt_path = Path(run.frontmatter.prompt_file)
-    prompt_path.parent.mkdir(parents=True, exist_ok=True)
-    prompt_path.write_text(prompt, encoding="utf-8")
-    Path(run.frontmatter.log_file).parent.mkdir(parents=True, exist_ok=True)
-    Path(run.frontmatter.log_file).write_text("", encoding="utf-8")
-
-    variables = template_variables(config, task, run, prompt)
-    cmux_command, _env = provider_command(config, task.frontmatter.agent, variables)
-    workspace_ref = cmux.new_workspace(
-        name=task.frontmatter.id,
-        description=task.frontmatter.title,
-        cwd=task.frontmatter.worktree,
-        command=cmux_command,
-        focus=False,
-    )
-    surface_ref = cmux.terminal_surface(workspace_ref)
-    run_surface_ref = cmux.markdown_open(run.abs_path, workspace_ref, surface_ref=surface_ref, direction="right")
-    cmux.markdown_open(task.abs_path, workspace_ref, surface_ref=run_surface_ref or surface_ref, direction="down")
-    cmux.set_status(workspace_ref, "running")
-
-    update_task_frontmatter(
-        config,
-        task_id,
-        {
-            "current_run": run.frontmatter.id,
-            "run_count": task.frontmatter.run_count + 1,
-            "workspace_ref": workspace_ref,
-            "surface_ref": surface_ref,
-            "cmux_command": cmux_command,
-        },
-    )
-    update_run_frontmatter(
-        config,
-        run.frontmatter.id,
-        {"workspace_ref": workspace_ref, "surface_ref": surface_ref, "cmux_command": cmux_command},
-    )
-    upsert_session(
-        config,
-        task_id,
-        {
-            "task_id": task_id,
-            "run_id": run.frontmatter.id,
-            "workspace_ref": workspace_ref,
-            "surface_ref": surface_ref,
-            "agent": task.frontmatter.agent,
-            "worktree": task.frontmatter.worktree,
-            "log_file": run.frontmatter.log_file,
-            "activity_file": str(activity_path),
-            "status": "running",
-            "cmux_command": cmux_command,
-            "transcript_hash": "",
-        },
-    )
-    mark_task(config, task_id, "running")
-    append_task_log(config, task_id, f"Agent started in `{workspace_ref}` with `{cmux_command}`.")
-    instruction = (
-        f"Please read the prompt file at {prompt_path} and follow it. "
-        "Update the task status to review-diff, needs-human, or failed; if you cannot edit the note, print AGENT_STATUS."
-    )
-    if "codex" in cmux_command.lower() and not cmux.wait_for_screen_text(workspace_ref, surface_ref, "OpenAI Codex"):
-        append_task_log(config, task_id, "Timed out waiting for Codex; sending prompt instruction anyway.")
-    cmux.send(workspace_ref, instruction, surface_ref=surface_ref)
-    cmux.send_enter(workspace_ref, surface_ref=surface_ref)
-    return {
-        "run_id": run.frontmatter.id,
-        "log_file": run.frontmatter.log_file,
-        "prompt_file": run.frontmatter.prompt_file,
-        "workspace_ref": workspace_ref,
-        "status": "running",
-    }
+    return ConductorEngine(config).start_task(task_id).to_dict()
 
 
 def send_command(config: Config, task_id: str, message: str, *, status: str | None = None) -> dict[str, Any]:
@@ -401,20 +323,7 @@ def activity_command(config: Config, task_id: str, activity: str, *, detail: str
 
 
 def stop_task(config: Config, task_id: str, *, park: bool = False, kill: bool = False) -> str:
-    session = read_sessions(config).get("sessions", {}).get(task_id)
-    if not session:
-        raise ValueError(f"No live session found for {task_id}")
-    workspace_ref = session.get("workspace_ref")
-    if workspace_ref:
-        cmux.close_workspace(workspace_ref)
-    status = "parked" if park else "failed"
-    run_id = session.get("run_id")
-    if run_id:
-        update_run_frontmatter(config, run_id, {"status": status, "ended": now_iso(), "exit_code": -15})
-    mark_task(config, task_id, status)
-    update_task_frontmatter(config, task_id, {"workspace_ref": None, "surface_ref": None})
-    remove_session(config, task_id)
-    return status
+    return ConductorEngine(config).stop_task(task_id, park=park, kill=kill).status
 
 
 def log_command(config: Config, task_id: str, *, tail: int | None = None) -> str:

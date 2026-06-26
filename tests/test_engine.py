@@ -1,0 +1,113 @@
+import pytest
+
+from vault_conductor.commands import init_command, new_task_command, start_task
+from vault_conductor.engine import ConductorEngine
+from vault_conductor.kanban import find_card, parse_board
+from vault_conductor.run_notes import read_run_note
+from vault_conductor.sessions import read_sessions
+from vault_conductor.tasks import read_task_note
+
+from conftest import cmux_calls
+from test_commands import write_registry
+
+
+def test_engine_owns_task_status_transition_outputs(config, fake_git_repo, fake_cmux):
+    init_command(config, open_obsidian=False)
+    write_registry(config, fake_git_repo)
+    created = new_task_command(config, repo="demo", title="Engine transition", status="ready")
+    start_task(config, created["id"])
+
+    engine = ConductorEngine(config)
+    transition = engine.set_task_status(created["id"], "review-diff", actor="conductor", source="unit-test")
+
+    task = read_task_note(config, created["id"])
+    board = parse_board(config.board_path.read_text(encoding="utf-8"))
+    session = read_sessions(config)["sessions"][created["id"]]
+    run = read_run_note(config, "AGT-0001-RUN-001")
+    operational_log = (config.logs_root / "conductor-watch.log").read_text(encoding="utf-8")
+    calls = cmux_calls(fake_cmux)
+
+    assert transition.task_id == created["id"]
+    assert transition.before_status == "running"
+    assert transition.after_status == "review-diff"
+    assert task.frontmatter.status == "review-diff"
+    assert find_card(board, created["id"]).column_title == "Review Diff"
+    assert session["status"] == "review-diff"
+    assert run.frontmatter.status == "review-diff"
+    assert run.frontmatter.ended is not None
+    assert "Status changed: running -> review-diff." in task.body
+    assert "source=unit-test" in operational_log
+    assert any(call[:3] == ["set-status", "agent", "review-diff"] for call in calls)
+
+
+def test_engine_preserves_human_only_done(config, fake_git_repo):
+    init_command(config, open_obsidian=False)
+    write_registry(config, fake_git_repo)
+    created = new_task_command(config, repo="demo", title="Human done", status="ready")
+
+    engine = ConductorEngine(config)
+
+    with pytest.raises(ValueError, match="Only a human"):
+        engine.set_task_status(created["id"], "done", actor="conductor", source="unit-test")
+
+
+def test_engine_starts_task_and_records_run_session_workspace(config, fake_git_repo, fake_cmux):
+    init_command(config, open_obsidian=False)
+    write_registry(config, fake_git_repo)
+    created = new_task_command(config, repo="demo", title="Engine start", status="ready")
+
+    engine = ConductorEngine(config)
+    result = engine.start_task(created["id"])
+
+    task = read_task_note(config, created["id"])
+    sessions = read_sessions(config)
+    calls = cmux_calls(fake_cmux)
+
+    assert result.task_id == created["id"]
+    assert result.run_id == "AGT-0001-RUN-001"
+    assert result.workspace_ref == "workspace:1"
+    assert result.status == "running"
+    assert task.frontmatter.status == "running"
+    assert task.frontmatter.current_run == result.run_id
+    assert task.frontmatter.run_count == 1
+    assert task.frontmatter.workspace_ref == "workspace:1"
+    assert task.frontmatter.surface_ref == "surface:1"
+    assert task.frontmatter.cmux_command == "cmux codex-teams"
+    assert sessions["sessions"][created["id"]]["run_id"] == result.run_id
+    assert sessions["sessions"][created["id"]]["activity_file"] == str(config.runs_dir / "AGT-0001-RUN-001-activity.md")
+    assert (config.worktrees_root / "demo" / created["id"]).is_dir()
+    assert (config.prompts_root / "AGT-0001-RUN-001.prompt.md").exists()
+    assert any(call[:1] == ["new-workspace"] for call in calls)
+
+    with pytest.raises(ValueError, match="already has a live session"):
+        engine.start_task(created["id"])
+
+
+def test_engine_stops_task_and_clears_live_session(config, fake_git_repo, fake_cmux):
+    init_command(config, open_obsidian=False)
+    write_registry(config, fake_git_repo)
+    created = new_task_command(config, repo="demo", title="Engine stop", status="ready")
+
+    engine = ConductorEngine(config)
+    start_result = engine.start_task(created["id"])
+    stop_result = engine.stop_task(created["id"], park=True)
+
+    task = read_task_note(config, created["id"])
+    run = read_run_note(config, start_result.run_id)
+    calls = cmux_calls(fake_cmux)
+
+    assert stop_result.task_id == created["id"]
+    assert stop_result.run_id == start_result.run_id
+    assert stop_result.workspace_ref == start_result.workspace_ref
+    assert stop_result.status == "parked"
+    assert task.frontmatter.status == "parked"
+    assert task.frontmatter.workspace_ref is None
+    assert task.frontmatter.surface_ref is None
+    assert run.frontmatter.status == "parked"
+    assert run.frontmatter.ended is not None
+    assert run.frontmatter.exit_code == -15
+    assert read_sessions(config)["sessions"] == {}
+    assert any(call[:2] == ["close-workspace", start_result.workspace_ref] for call in calls)
+
+    with pytest.raises(ValueError, match="No live session"):
+        engine.stop_task(created["id"])
