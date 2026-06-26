@@ -158,6 +158,12 @@ def append_run_followup(config: Config, run_id: str, message: str) -> None:
     write_file_atomic(note.abs_path, stringify_markdown(note.frontmatter.to_mapping(), body))
 
 
+def append_run_repair_event(config: Config, run_id: str, message: str) -> None:
+    note = read_run_note(config, run_id)
+    body = append_section_line(note.body, "Session repair", f"{now_iso()} - {message}")
+    write_file_atomic(note.abs_path, stringify_markdown(note.frontmatter.to_mapping(), body))
+
+
 def replace_run_section(config: Config, run_id: str, heading: str, content: str) -> None:
     note = read_run_note(config, run_id)
     body = replace_section(note.body, heading, content)

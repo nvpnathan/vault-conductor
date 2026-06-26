@@ -12,6 +12,7 @@ from vault_conductor.commands import (
     mark_task,
     new_task_command,
     pr_command,
+    repair_sessions_command,
     send_command,
     start_task,
     sync_command,
@@ -514,7 +515,7 @@ def test_doctor_reports_stale_cmux_session_refs(config, fake_cmux):
         },
     )
 
-    result = doctor_command(config, fix=True)
+    result = doctor_command(config, fix=False)
     checks = {check["name"]: check["status"] for check in result["checks"]}
 
     assert checks["cmux-session-refs"] == "WARN"
@@ -527,8 +528,72 @@ def test_doctor_reports_stale_cmux_session_refs(config, fake_cmux):
             "surface_ref": "surface:999",
             "surfaces": {"agent": "surface:999"},
             "workspace_exists": False,
+            "surface_exists": None,
         }
     ]
+
+
+def test_repair_sessions_command_reports_repair_details(config, fake_git_repo, fake_cmux):
+    init_command(config, open_obsidian=False)
+    write_registry(config, fake_git_repo)
+    created = new_task_command(config, repo="demo", title="Repair command", status="ready")
+    start_task(config, created["id"])
+    update = read_sessions(config)
+    update["sessions"][created["id"]].update(
+        {
+            "status": "done",
+            "workspace_ref": "workspace:999",
+            "surface_ref": "surface:999",
+        }
+    )
+    write_sessions(config, update)
+    from vault_conductor.tasks import update_task_frontmatter
+
+    update_task_frontmatter(
+        config,
+        created["id"],
+        {"status": "done", "workspace_ref": "workspace:999", "surface_ref": "surface:999"},
+    )
+
+    result = repair_sessions_command(config)
+
+    assert result["count"] == 1
+    assert result["repairs"][0]["task_id"] == created["id"]
+    assert result["repairs"][0]["reason"] == "workspace-missing"
+    assert result["repairs"][0]["action"] == "closed"
+    assert result["repairs"][0]["session_removed"] is True
+    assert read_sessions(config)["sessions"] == {}
+
+
+def test_doctor_fix_repairs_safe_stale_sessions_and_reports_actions(config, fake_git_repo, fake_cmux):
+    init_command(config, open_obsidian=False)
+    write_registry(config, fake_git_repo)
+    created = new_task_command(config, repo="demo", title="Doctor repair", status="ready")
+    start_task(config, created["id"])
+    sessions = read_sessions(config)
+    sessions["sessions"][created["id"]].update(
+        {
+            "status": "done",
+            "workspace_ref": "workspace:999",
+            "surface_ref": "surface:999",
+        }
+    )
+    write_sessions(config, sessions)
+    from vault_conductor.tasks import update_task_frontmatter
+
+    update_task_frontmatter(
+        config,
+        created["id"],
+        {"status": "done", "workspace_ref": "workspace:999", "surface_ref": "surface:999"},
+    )
+
+    result = doctor_command(config, fix=True)
+    checks = {check["name"]: check for check in result["checks"]}
+
+    assert checks["cmux-session-repair"]["status"] == "OK"
+    assert "Repaired 1 cmux session" in checks["cmux-session-repair"]["message"]
+    assert result["cmux"]["repairs"][0]["action"] == "closed"
+    assert read_sessions(config)["sessions"] == {}
 
 
 def move_card_only_on_board(config, task_id: str, column: str):

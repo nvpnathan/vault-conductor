@@ -188,6 +188,12 @@ elif cmd == "new-surface":
     write_state(data)
     emit({"surface_ref": surface_ref, "pane_ref": pane_ref, "url": url}, f"OK surface={surface_ref} pane={pane_ref}")
 elif cmd == "read-screen":
+    workspace_ref = args[args.index("--workspace") + 1] if "--workspace" in args else None
+    if workspace_ref:
+        data = read_state()
+        if not any(item["ref"] == workspace_ref for item in data["workspaces"]):
+            emit({"ok": False}, "ERROR workspace not found")
+            sys.exit(1)
     sequence = os.environ.get("FAKE_CMUX_SCREEN_SEQUENCE")
     if sequence is not None:
         data = read_state()

@@ -100,6 +100,23 @@ def test_workspace_layout_round_trips_session_patch_and_legacy_records():
     assert legacy.agent_surface_ref == "surface:7"
 
 
+def test_workspace_layout_prefers_top_level_session_refs_when_layout_drifts():
+    restored = CmuxWorkspaceLayout.from_session(
+        {
+            "workspace_ref": "workspace:9",
+            "surface_ref": "surface:10",
+            "cmux_layout": {
+                "workspace_ref": "workspace:1",
+                "surfaces": {"agent": "surface:1", "run_note": "surface:2"},
+            },
+        }
+    )
+
+    assert restored.workspace_ref == "workspace:9"
+    assert restored.agent_surface_ref == "surface:10"
+    assert restored.run_note_surface_ref == "surface:2"
+
+
 def test_runtime_state_loads_session_layouts_and_indexes_workspaces():
     state = CmuxRuntimeState.from_sessions_data(
         {

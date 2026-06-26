@@ -671,12 +671,30 @@ def status_command(config: Config) -> dict[str, Any]:
     }
 
 
+def repair_sessions_command(config: Config) -> dict[str, Any]:
+    from .watch import repair_stale_sessions
+
+    repairs = repair_stale_sessions(config)
+    repair_data = [repair.to_dict() for repair in repairs]
+    return {
+        "count": len(repair_data),
+        "needsHuman": sum(1 for repair in repairs if repair.manual_action_required),
+        "repairs": repair_data,
+    }
+
+
 def doctor_command(config: Config, *, fix: bool = False) -> dict[str, Any]:
+    repair_result: dict[str, Any] | None = None
+    repair_error: str | None = None
     if fix:
         for directory in [config.worktrees_root, config.logs_root, config.prompts_root, config.state_root]:
             directory.mkdir(parents=True, exist_ok=True)
         if config.board_path.exists():
             write_board(config, ensure_columns(read_board(config), BOARD_COLUMNS))
+        try:
+            repair_result = repair_sessions_command(config)
+        except Exception as error:
+            repair_error = str(error)
     checks: list[dict[str, str]] = []
     checks.append(exists_check("vault", config.vault_path, "Vault exists"))
     checks.append(exists_check("board", config.board_path, "Board exists"))
@@ -743,6 +761,25 @@ def doctor_command(config: Config, *, fix: bool = False) -> dict[str, Any]:
         )
     cmux_details = inspect_cmux_runtime(config)
     checks.extend(cmux_details.pop("checks"))
+    if repair_result is not None:
+        count = int(repair_result.get("count", 0))
+        needs_human = int(repair_result.get("needsHuman", 0))
+        cmux_details["repairs"] = repair_result["repairs"]
+        checks.append(
+            {
+                "name": "cmux-session-repair",
+                "status": "WARN" if needs_human else "OK",
+                "message": (
+                    f"Repaired {count} cmux session{'s' if count != 1 else ''}; "
+                    f"{needs_human} need human reconciliation"
+                ),
+            }
+        )
+    elif repair_error:
+        cmux_details["repairs"] = []
+        checks.append({"name": "cmux-session-repair", "status": "WARN", "message": repair_error})
+    else:
+        cmux_details["repairs"] = []
     return {
         "checks": checks,
         "cli": provenance,
@@ -823,30 +860,43 @@ def inspect_cmux_runtime(config: Config) -> dict[str, Any]:
     except Exception as error:
         details["liveWorkspaces"] = []
         checks.append({"name": "cmux-session-refs", "status": "WARN", "message": str(error)})
-    details["sessions"] = [
-        {
-            "task_id": session.task_id,
-            "run_id": session.run_id,
-            "status": session.status,
-            "workspace_ref": session.workspace_ref,
-            "surface_ref": session.surface_ref,
-            "surfaces": dict(session.layout.surfaces),
-            "workspace_exists": (
-                session.workspace_ref in live_workspace_refs
-                if live_workspace_refs is not None and session.workspace_ref
-                else None
-            ),
-        }
-        for session in runtime.sessions.values()
-    ]
+    session_details = []
+    for session in runtime.sessions.values():
+        workspace_exists = (
+            session.workspace_ref in live_workspace_refs
+            if live_workspace_refs is not None and session.workspace_ref
+            else None
+        )
+        surface_exists = None
+        if workspace_exists and session.surface_ref:
+            try:
+                surface_exists = adapter.surface_exists(session.workspace_ref, session.surface_ref)
+            except Exception:
+                surface_exists = None
+        session_details.append(
+            {
+                "task_id": session.task_id,
+                "run_id": session.run_id,
+                "status": session.status,
+                "workspace_ref": session.workspace_ref,
+                "surface_ref": session.surface_ref,
+                "surfaces": dict(session.layout.surfaces),
+                "workspace_exists": workspace_exists,
+                "surface_exists": surface_exists,
+            }
+        )
+    details["sessions"] = session_details
     if not any(check["name"] == "cmux-session-refs" for check in checks):
-        stale_count = sum(1 for session in details["sessions"] if session["workspace_exists"] is False)
+        stale_workspace_count = sum(1 for session in details["sessions"] if session["workspace_exists"] is False)
+        stale_surface_count = sum(1 for session in details["sessions"] if session["surface_exists"] is False)
+        stale_count = stale_workspace_count + stale_surface_count
         checks.append(
             {
                 "name": "cmux-session-refs",
                 "status": "WARN" if stale_count else "OK",
                 "message": (
-                    f"{stale_count} tracked sessions point at missing cmux workspaces"
+                    f"{stale_workspace_count} tracked sessions point at missing cmux workspaces; "
+                    f"{stale_surface_count} point at missing cmux surfaces"
                     if stale_count
                     else f"{len(runtime.sessions)} tracked sessions have live cmux workspace refs"
                 ),

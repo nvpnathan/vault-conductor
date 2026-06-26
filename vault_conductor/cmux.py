@@ -163,10 +163,10 @@ class CmuxWorkspaceLayout:
         surfaces = _str_dict(layout.get("surfaces"))
         panes = _str_dict(layout.get("panes"))
         legacy_surface = _first_str(record.get("surface_ref"))
-        if legacy_surface and "agent" not in surfaces:
+        if legacy_surface:
             surfaces["agent"] = legacy_surface
-        workspace_ref = _first_str(layout.get("workspace_ref"), record.get("workspace_ref"))
-        workspace_id = _first_str(layout.get("workspace_id"), record.get("workspace_id"))
+        workspace_ref = _first_str(record.get("workspace_ref"), layout.get("workspace_ref"))
+        workspace_id = _first_str(record.get("workspace_id"), layout.get("workspace_id"))
         return cls(
             workspace_ref=workspace_ref,
             workspace_id=workspace_id,
@@ -587,6 +587,28 @@ class CmuxAdapter:
     def workspace_exists(self, workspace_ref: str) -> bool:
         return self.run("read-screen", "--workspace", workspace_ref, timeout=5).ok
 
+    def workspace_surface_refs(self, workspace_ref: str) -> set[str]:
+        refs: set[str] = set()
+        panes = self.json("list-panes", "--workspace", workspace_ref).get("panes", [])
+        for pane in panes:
+            refs.update(str(ref) for ref in pane.get("surface_refs", []) if ref)
+            surfaces = pane.get("surfaces") if isinstance(pane.get("surfaces"), list) else []
+            refs.update(str(surface.get("ref")) for surface in surfaces if surface.get("ref"))
+            pane_ref = pane.get("ref")
+            if pane_ref:
+                pane_surfaces = self.json(
+                    "list-pane-surfaces",
+                    "--workspace",
+                    workspace_ref,
+                    "--pane",
+                    str(pane_ref),
+                ).get("surfaces", [])
+                refs.update(str(surface.get("ref")) for surface in pane_surfaces if surface.get("ref"))
+        return refs
+
+    def surface_exists(self, workspace_ref: str, surface_ref: str) -> bool:
+        return surface_ref in self.workspace_surface_refs(workspace_ref)
+
     def read_screen(self, workspace_ref: str, *, surface_ref: str | None = None) -> str:
         args = ["read-screen", "--workspace", workspace_ref]
         if surface_ref:
@@ -874,6 +896,14 @@ def list_workspaces() -> list[dict[str, Any]]:
 
 def workspace_exists(workspace_ref: str) -> bool:
     return _default_adapter.workspace_exists(workspace_ref)
+
+
+def workspace_surface_refs(workspace_ref: str) -> set[str]:
+    return _default_adapter.workspace_surface_refs(workspace_ref)
+
+
+def surface_exists(workspace_ref: str, surface_ref: str) -> bool:
+    return _default_adapter.surface_exists(workspace_ref, surface_ref)
 
 
 def read_screen(workspace_ref: str, *, surface_ref: str | None = None) -> str:

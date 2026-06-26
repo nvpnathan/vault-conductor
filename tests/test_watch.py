@@ -2,7 +2,8 @@ import json
 
 import pytest
 
-from vault_conductor.commands import init_command, new_task_command
+from vault_conductor.commands import init_command, new_task_command, start_task
+from vault_conductor.run_notes import read_run_note
 from vault_conductor.sessions import read_sessions, write_sessions
 from vault_conductor.tasks import read_task_note, update_task_frontmatter
 from vault_conductor.watch import reconcile_closed_workspaces, repair_stale_sessions, watch_forever, watch_once
@@ -170,12 +171,94 @@ def test_repair_stale_sessions_returns_repair_details_and_removes_layout(config,
     assert repairs[0].task_id == created["id"]
     assert repairs[0].workspace_ref == "workspace:9"
     assert repairs[0].reason == "workspace-missing"
+    assert repairs[0].action == "needs-human"
     assert repairs[0].was_running is True
+    assert repairs[0].session_removed is True
     task = read_task_note(config, created["id"]).frontmatter
     assert task.status == "needs-human"
     assert task.workspace_ref is None
     assert task.surface_ref is None
     assert read_sessions(config)["sessions"] == {}
+
+
+def test_repair_done_task_with_missing_workspace_closes_stale_session_and_preserves_run_evidence(
+    config, fake_git_repo, fake_cmux
+):
+    init_command(config, open_obsidian=False)
+    write_registry(config, fake_git_repo)
+    created = new_task_command(config, repo="demo", title="Done stale session", status="ready")
+    result = start_task(config, created["id"])
+    update_task_frontmatter(
+        config,
+        created["id"],
+        {"status": "done", "workspace_ref": "workspace:999", "surface_ref": "surface:999"},
+    )
+    sessions = read_sessions(config)
+    session = sessions["sessions"][created["id"]]
+    session.update({"status": "done", "workspace_ref": "workspace:999", "surface_ref": "surface:999"})
+    write_sessions(config, sessions)
+
+    repairs = repair_stale_sessions(config, live_workspace_refs={"workspace:1"})
+
+    assert len(repairs) == 1
+    assert repairs[0].task_id == created["id"]
+    assert repairs[0].reason == "workspace-missing"
+    assert repairs[0].action == "closed"
+    assert repairs[0].was_running is False
+    assert repairs[0].session_removed is True
+    task = read_task_note(config, created["id"]).frontmatter
+    assert task.status == "done"
+    assert task.workspace_ref is None
+    assert task.surface_ref is None
+    assert read_sessions(config)["sessions"] == {}
+    run = read_run_note(config, result["run_id"])
+    assert "Session repair" in run.body
+    assert "workspace-missing" in run.body
+    assert "workspace:999" in run.body
+
+
+def test_repair_missing_surface_in_live_workspace_keeps_session_and_needs_human(config, fake_git_repo, fake_cmux):
+    init_command(config, open_obsidian=False)
+    write_registry(config, fake_git_repo)
+    created = new_task_command(config, repo="demo", title="Missing surface", status="ready")
+    result = start_task(config, created["id"])
+    update_task_frontmatter(config, created["id"], {"surface_ref": "surface:999"})
+    sessions = read_sessions(config)
+    session = sessions["sessions"][created["id"]]
+    session.update(
+        {
+            "status": "running",
+            "surface_ref": "surface:999",
+            "cmux_layout": {
+                **session["cmux_layout"],
+                "surfaces": {**session["cmux_layout"]["surfaces"], "agent": "surface:999"},
+            },
+        }
+    )
+    write_sessions(config, sessions)
+
+    repairs = repair_stale_sessions(config)
+
+    assert len(repairs) == 1
+    assert repairs[0].task_id == created["id"]
+    assert repairs[0].workspace_ref == "workspace:1"
+    assert repairs[0].surface_ref == "surface:999"
+    assert repairs[0].reason == "surface-missing"
+    assert repairs[0].action == "needs-human"
+    assert repairs[0].session_removed is False
+    task = read_task_note(config, created["id"]).frontmatter
+    assert task.status == "needs-human"
+    assert task.workspace_ref == "workspace:1"
+    assert task.surface_ref is None
+    repaired_session = read_sessions(config)["sessions"][created["id"]]
+    assert repaired_session["status"] == "needs-human"
+    assert repaired_session["workspace_ref"] == "workspace:1"
+    assert repaired_session["surface_ref"] is None
+    assert "agent" not in repaired_session["cmux_layout"]["surfaces"]
+    run = read_run_note(config, result["run_id"])
+    assert "Session repair" in run.body
+    assert "surface-missing" in run.body
+    assert "surface:999" in run.body
 
 
 def test_reconcile_keeps_session_when_workspace_list_temporarily_misses_live_workspace(config, fake_git_repo, monkeypatch):

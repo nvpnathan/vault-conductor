@@ -16,6 +16,7 @@ from .commands import (
     move_command,
     new_task_command,
     pr_command,
+    repair_sessions_command,
     scan_command,
     send_command,
     start_task,
@@ -130,6 +131,7 @@ def build_parser() -> argparse.ArgumentParser:
     doctor = sub.add_parser("doctor")
     doctor.add_argument("--fix", action="store_true")
     doctor.add_argument("--json", dest="command_json", action="store_true")
+    sub.add_parser("repair-sessions")
     sub.add_parser("dashboard")
     return parser
 
@@ -259,6 +261,20 @@ def dispatch(config, args):
             lines = ["Agent Control Room Doctor", ""]
             lines.extend(f"{check['status'].ljust(4)} {check['message']}" for check in result["checks"])
             return "\n".join(lines), "\n".join(lines)
+        case "repair-sessions":
+            result = repair_sessions_command(config)
+            if config.flags.get("json"):
+                return result, ""
+            lines = [
+                f"Repaired {result['count']} cmux session{'s' if result['count'] != 1 else ''}.",
+                f"{result['needsHuman']} need human reconciliation.",
+            ]
+            for repair in result["repairs"]:
+                lines.append(
+                    f"{repair['task_id']} {repair['action']} {repair['reason']} "
+                    f"workspace={repair['workspace_ref']} surface={repair['surface_ref']}"
+                )
+            return result, "\n".join(lines)
         case "dashboard":
             from .dashboard import main as dashboard_main
 
