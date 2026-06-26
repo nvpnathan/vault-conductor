@@ -75,6 +75,11 @@ def test_engine_starts_task_and_records_run_session_workspace(config, fake_git_r
     assert task.frontmatter.cmux_command == "cmux codex-teams"
     assert sessions["sessions"][created["id"]]["run_id"] == result.run_id
     assert sessions["sessions"][created["id"]]["activity_file"] == str(config.runs_dir / "AGT-0001-RUN-001-activity.md")
+    assert sessions["sessions"][created["id"]]["cmux_layout"]["surfaces"] == {
+        "agent": "surface:1",
+        "run_note": "surface:2",
+        "task_note": "surface:3",
+    }
     assert (config.worktrees_root / "demo" / created["id"]).is_dir()
     assert (config.prompts_root / "AGT-0001-RUN-001.prompt.md").exists()
     assert any(call[:1] == ["new-workspace"] for call in calls)
@@ -111,3 +116,55 @@ def test_engine_stops_task_and_clears_live_session(config, fake_git_repo, fake_c
 
     with pytest.raises(ValueError, match="No live session"):
         engine.stop_task(created["id"])
+
+
+def test_engine_sends_followup_to_live_task(config, fake_git_repo, fake_cmux):
+    init_command(config, open_obsidian=False)
+    write_registry(config, fake_git_repo)
+    created = new_task_command(config, repo="demo", title="Engine send", status="ready")
+
+    engine = ConductorEngine(config)
+    start_result = engine.start_task(created["id"])
+    result = engine.send_to_task(created["id"], "Please add the focused regression test.", status="needs-human")
+
+    task = read_task_note(config, created["id"])
+    calls = cmux_calls(fake_cmux)
+    run_text = (config.runs_dir / "AGT-0001-RUN-001-codex.md").read_text(encoding="utf-8")
+    followups_text = (config.prompts_root / "AGT-0001-RUN-001.followups.md").read_text(encoding="utf-8")
+
+    assert result.task_id == created["id"]
+    assert result.message == "Please add the focused regression test."
+    assert result.saved is True
+    assert result.sent is True
+    assert task.frontmatter.status == "needs-human"
+    assert "Human instruction: Please add the focused regression test." in task.body
+    assert "Please add the focused regression test." in run_text
+    assert "Please add the focused regression test." in followups_text
+    assert any(
+        call[:5] == ["send", "--workspace", start_result.workspace_ref, "--surface", "surface:1"]
+        and "Please add the focused regression test." in " ".join(call)
+        for call in calls
+    )
+    assert any(
+        call[:5] == ["send-key", "--workspace", start_result.workspace_ref, "--surface", "surface:1"] and "enter" in call
+        for call in calls
+    )
+
+
+def test_engine_saves_followup_without_live_session(config, fake_git_repo, fake_cmux):
+    init_command(config, open_obsidian=False)
+    write_registry(config, fake_git_repo)
+    created = new_task_command(config, repo="demo", title="Engine saved send", status="ready")
+
+    result = ConductorEngine(config).send_to_task(created["id"], "Queue this for later.")
+
+    task = read_task_note(config, created["id"])
+    calls = cmux_calls(fake_cmux)
+
+    assert result.task_id == created["id"]
+    assert result.saved is True
+    assert result.sent is False
+    assert result.message == "Queue this for later."
+    assert task.frontmatter.status == "ready"
+    assert "Human instruction: Queue this for later." in task.body
+    assert not any(call[:1] == ["send"] for call in calls)

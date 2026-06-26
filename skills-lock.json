@@ -7,6 +7,54 @@
       "skillPath": "skills/productivity/caveman/SKILL.md",
       "computedHash": "934433479903febc585bf6deb5f0cebc63137e3f86b7babe0aab1ecb94d6d7a4"
     },
+    "cmux-artifact": {
+      "source": "manaflow-ai/cmux-skills",
+      "sourceType": "github",
+      "skillPath": "skills/cmux-artifact/SKILL.md",
+      "computedHash": "e239eed24af001b0392c7146f0e642a37529cbbb365c59fca850048c228bca45"
+    },
+    "cmux-browser": {
+      "source": "manaflow-ai/cmux-skills",
+      "sourceType": "github",
+      "skillPath": "skills/cmux-browser/SKILL.md",
+      "computedHash": "c4309a362a729948e570d53868183d5138c191de38bdba3799749c9005e87bea"
+    },
+    "cmux-cli": {
+      "source": "manaflow-ai/cmux-skills",
+      "sourceType": "github",
+      "skillPath": "skills/cmux-cli/SKILL.md",
+      "computedHash": "b9c08ff3adcfde9d41a4c92471ca2fd6df91283b2918b115192d48c32e22dc90"
+    },
+    "cmux-config": {
+      "source": "manaflow-ai/cmux-skills",
+      "sourceType": "github",
+      "skillPath": "skills/cmux-config/SKILL.md",
+      "computedHash": "09b6e2b8f20ff32972dbed1d500a863d1cf224778a5047a663091ffabac86937"
+    },
+    "cmux-freestyle": {
+      "source": "manaflow-ai/cmux-skills",
+      "sourceType": "github",
+      "skillPath": "skills/cmux-freestyle/SKILL.md",
+      "computedHash": "bfa5cfc0edf470d66fea6f82bc84b54fcf2352fb24f4b4598ecc84019eec1e54"
+    },
+    "cmux-ref": {
+      "source": "manaflow-ai/cmux-skills",
+      "sourceType": "github",
+      "skillPath": "skills/cmux-ref/SKILL.md",
+      "computedHash": "e11a6f69c3b8564e82519a4770bdc35cb85c0bdc9f291726d7f961b1498061e8"
+    },
+    "cmux-sidebar-builder": {
+      "source": "manaflow-ai/cmux-skills",
+      "sourceType": "github",
+      "skillPath": "skills/cmux-sidebar-builder/SKILL.md",
+      "computedHash": "fd448910e7d2cfb67edf9021d905a46fe75fbd8d84ad6ed5e27a55350e2192ca"
+    },
+    "cmux-workspace": {
+      "source": "manaflow-ai/cmux-skills",
+      "sourceType": "github",
+      "skillPath": "skills/cmux-workspace/SKILL.md",
+      "computedHash": "dbd883ec4c91bfe6f9116ae1fb5a66105946a1d4d5f312e2356fbcf2d2d46573"
+    },
     "diagnose": {
       "source": "mattpocock/skills",
       "sourceType": "github",

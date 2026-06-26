@@ -37,7 +37,7 @@ from .kanban import (
 )
 from .markdown import write_file_atomic
 from .repos import RepoEntry, find_repo, load_repo_registry, registry_path, scan_repos, sync_project_notes
-from .run_notes import append_run_followup, update_run_frontmatter
+from .run_notes import update_run_frontmatter
 from .sessions import read_sessions, remove_session, transcript_hash, upsert_session
 from .tasks import (
     append_task_log,
@@ -301,21 +301,7 @@ def start_task(config: Config, task_id: str) -> dict[str, str]:
 
 
 def send_command(config: Config, task_id: str, message: str, *, status: str | None = None) -> dict[str, Any]:
-    task = read_task_note(config, task_id)
-    if task.frontmatter.current_run:
-        append_run_followup(config, task.frontmatter.current_run, message)
-        followup_file = config.prompts_root / f"{task.frontmatter.current_run}.followups.md"
-        followup_file.parent.mkdir(parents=True, exist_ok=True)
-        with followup_file.open("a", encoding="utf-8") as handle:
-            handle.write(f"{now_iso()} {message}\n")
-    append_task_log(config, task_id, f"Human instruction: {message}")
-    session = read_sessions(config).get("sessions", {}).get(task_id)
-    if session and session.get("workspace_ref"):
-        cmux.send(session["workspace_ref"], message, surface_ref=session.get("surface_ref"))
-        cmux.send_enter(session["workspace_ref"], surface_ref=session.get("surface_ref"))
-    if status:
-        mark_task(config, task_id, status)
-    return {"saved": True, "sent": bool(session), "message": message}
+    return ConductorEngine(config).send_to_task(task_id, message, status=status).to_dict()
 
 
 def activity_command(config: Config, task_id: str, activity: str, *, detail: str = "") -> dict[str, Any]:
@@ -496,8 +482,15 @@ def open_pr_in_workspace(config: Config, task_id: str, pr_url: str) -> None:
     workspace_ref = session.get("workspace_ref") if session else None
     if not workspace_ref:
         return
-    cmux.open_browser_split(pr_url, workspace_ref)
-    cmux.select_workspace(workspace_ref)
+    layout = cmux.CmuxWorkspaceLayout.from_session(session)
+    focus_policy = cmux.CmuxHITLPolicy(
+        focus_new_surfaces=True,
+        browser_focus=True,
+        allow_select_workspace=True,
+        notify=False,
+        open_browser=True,
+    )
+    cmux.present_handoff(layout, pr_url=pr_url, focus_policy=focus_policy)
 
 
 def notify_task(config: Config, task_id: str, title: str, body: str) -> None:

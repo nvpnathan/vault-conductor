@@ -48,9 +48,22 @@ state_file = Path(os.environ["FAKE_CMUX_WORKSPACES"])
 calls.open("a", encoding="utf-8").write(json.dumps(args) + "\\n")
 
 json_mode = False
-if args and args[0] == "--json":
-    json_mode = True
-    args = args[1:]
+socket_path = None
+id_format = None
+while args:
+    if args[0] == "--json":
+        json_mode = True
+        args = args[1:]
+    elif args[0] == "--socket" and len(args) > 1:
+        socket_path = args[1]
+        args = args[2:]
+    elif args[0] == "--password" and len(args) > 1:
+        args = args[2:]
+    elif args[0] == "--id-format" and len(args) > 1:
+        id_format = args[1]
+        args = args[2:]
+    else:
+        break
 
 cmd = args[0] if args else ""
 
@@ -71,6 +84,19 @@ def emit_text(text):
 
 if cmd == "ping":
     emit({"ok": True}, "OK")
+elif cmd == "identify":
+    emit(
+        {
+            "workspace_ref": "workspace:1",
+            "workspace_id": "workspace-id-1" if id_format == "both" else None,
+            "surface_ref": "surface:1",
+            "surface_id": "surface-id-1" if id_format == "both" else None,
+            "socket_path": socket_path or os.environ.get("CMUX_SOCKET_PATH") or "/tmp/fake-cmux.sock",
+        },
+        "OK",
+    )
+elif cmd == "capabilities":
+    emit({"commands": ["identify", "capabilities", "new-workspace", "markdown", "send", "notify"]}, "OK")
 elif cmd == "new-workspace":
     data = read_state()
     ref = f"workspace:{len(data['workspaces']) + 1}"

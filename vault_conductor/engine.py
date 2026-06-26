@@ -21,10 +21,11 @@ from .kanban import (
 )
 from .operational_log import append_operational_log
 from .repos import sync_project_notes
-from .run_notes import create_run_note, update_run_frontmatter
+from .run_notes import append_run_followup, create_run_note, update_run_frontmatter
 from .sessions import read_sessions, remove_session, upsert_session
 from .tasks import (
     append_task_log,
+    now_iso,
     read_all_task_notes,
     read_task_note,
     status_from_column,
@@ -64,6 +65,21 @@ class StopTaskResult:
     run_id: str | None
     workspace_ref: str | None
     status: str
+
+
+@dataclass(frozen=True)
+class SendTaskResult:
+    task_id: str
+    saved: bool
+    sent: bool
+    message: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "saved": self.saved,
+            "sent": self.sent,
+            "message": self.message,
+        }
 
 
 class ConductorEngine:
@@ -144,17 +160,25 @@ class ConductorEngine:
 
         variables = template_variables(self.config, task, run, prompt)
         cmux_command, _env = provider_command(self.config, task.frontmatter.agent, variables)
-        workspace_ref = cmux.new_workspace(
-            name=task.frontmatter.id,
-            description=task.frontmatter.title,
+        focus_policy = cmux.CmuxHITLPolicy.non_disruptive()
+        workspace_layout = cmux.create_task_workspace(
+            task_id=task.frontmatter.id,
+            title=task.frontmatter.title,
             cwd=task.frontmatter.worktree,
             command=cmux_command,
-            focus=False,
+            policy=focus_policy,
         )
-        surface_ref = cmux.terminal_surface(workspace_ref)
-        run_surface_ref = cmux.markdown_open(run.abs_path, workspace_ref, surface_ref=surface_ref, direction="right")
-        cmux.markdown_open(task.abs_path, workspace_ref, surface_ref=run_surface_ref or surface_ref, direction="down")
-        cmux.set_status(workspace_ref, "running")
+        workspace_layout = cmux.open_task_context(
+            workspace_layout,
+            task_note=task.abs_path,
+            run_note=run.abs_path,
+            policy=focus_policy,
+        )
+        if not workspace_layout.workspace_ref:
+            raise RuntimeError("cmux did not return a workspace reference")
+        workspace_ref = workspace_layout.workspace_ref
+        surface_ref = workspace_layout.agent_surface_ref
+        cmux.surface_status(workspace_layout, status="running")
 
         update_task_frontmatter(
             self.config,
@@ -172,23 +196,21 @@ class ConductorEngine:
             run.frontmatter.id,
             {"workspace_ref": workspace_ref, "surface_ref": surface_ref, "cmux_command": cmux_command},
         )
-        upsert_session(
-            self.config,
-            task_id,
-            {
-                "task_id": task_id,
-                "run_id": run.frontmatter.id,
-                "workspace_ref": workspace_ref,
-                "surface_ref": surface_ref,
-                "agent": task.frontmatter.agent,
-                "worktree": task.frontmatter.worktree,
-                "log_file": run.frontmatter.log_file,
-                "activity_file": str(activity_path),
-                "status": "running",
-                "cmux_command": cmux_command,
-                "transcript_hash": "",
-            },
-        )
+        session_record = {
+            "task_id": task_id,
+            "run_id": run.frontmatter.id,
+            "workspace_ref": workspace_ref,
+            "surface_ref": surface_ref,
+            "agent": task.frontmatter.agent,
+            "worktree": task.frontmatter.worktree,
+            "log_file": run.frontmatter.log_file,
+            "activity_file": str(activity_path),
+            "status": "running",
+            "cmux_command": cmux_command,
+            "transcript_hash": "",
+        }
+        session_record.update(workspace_layout.to_session_patch())
+        upsert_session(self.config, task_id, session_record)
         self.set_task_status(task_id, "running", actor="conductor", source="start")
         append_task_log(self.config, task_id, f"Agent started in `{workspace_ref}` with `{cmux_command}`.")
         instruction = (
@@ -197,8 +219,7 @@ class ConductorEngine:
         )
         if "codex" in cmux_command.lower() and not cmux.wait_for_screen_text(workspace_ref, surface_ref, "OpenAI Codex"):
             append_task_log(self.config, task_id, "Timed out waiting for Codex; sending prompt instruction anyway.")
-        cmux.send(workspace_ref, instruction, surface_ref=surface_ref)
-        cmux.send_enter(workspace_ref, surface_ref=surface_ref)
+        cmux.send_to_agent(workspace_layout, instruction)
         return RunStartResult(
             task_id=task_id,
             run_id=run.frontmatter.id,
@@ -218,8 +239,6 @@ class ConductorEngine:
         status = "parked" if park else "failed"
         run_id = session.get("run_id")
         if run_id:
-            from .tasks import now_iso
-
             update_run_frontmatter(self.config, run_id, {"status": status, "ended": now_iso(), "exit_code": -15})
         self.set_task_status(task_id, status, actor="conductor", source="stop")
         update_task_frontmatter(self.config, task_id, {"workspace_ref": None, "surface_ref": None})
@@ -229,6 +248,28 @@ class ConductorEngine:
             run_id=run_id,
             workspace_ref=workspace_ref,
             status=status,
+        )
+
+    def send_to_task(self, task_id: str, message: str, *, status: str | None = None) -> SendTaskResult:
+        task = read_task_note(self.config, task_id)
+        if task.frontmatter.current_run:
+            append_run_followup(self.config, task.frontmatter.current_run, message)
+            followup_file = self.config.prompts_root / f"{task.frontmatter.current_run}.followups.md"
+            followup_file.parent.mkdir(parents=True, exist_ok=True)
+            with followup_file.open("a", encoding="utf-8") as handle:
+                handle.write(f"{now_iso()} {message}\n")
+        append_task_log(self.config, task_id, f"Human instruction: {message}")
+        session = read_sessions(self.config).get("sessions", {}).get(task_id)
+        if session and session.get("workspace_ref"):
+            cmux.send(session["workspace_ref"], message, surface_ref=session.get("surface_ref"))
+            cmux.send_enter(session["workspace_ref"], surface_ref=session.get("surface_ref"))
+        if status:
+            self.set_task_status(task_id, status)
+        return SendTaskResult(
+            task_id=task_id,
+            saved=True,
+            sent=bool(session),
+            message=message,
         )
 
     def sync_board(self, *, board_wins: bool = False) -> dict[str, int]:
@@ -310,8 +351,6 @@ class ConductorEngine:
         cmux.set_status(session["workspace_ref"], status)
         self.notify_status_change(task_id, status, session["workspace_ref"])
         if session.get("run_id") and status in {"review-diff", "failed", "parked", "pr-opened", "done"}:
-            from .tasks import now_iso
-
             update_run_frontmatter(self.config, session["run_id"], {"status": status, "ended": now_iso()})
 
     def notify_status_change(self, task_id: str, status: str, workspace_ref: str) -> None:
