@@ -18,17 +18,18 @@ class ActivityDefinition:
     label: str
     icon: str
     color: str
+    progress: float
 
 
 ACTIVITY_DEFINITIONS: dict[str, ActivityDefinition] = {
-    "reading": ActivityDefinition("reading", "Reading", "search", "#4c71f2"),
-    "planning": ActivityDefinition("planning", "Planning", "route", "#7c3aed"),
-    "editing": ActivityDefinition("editing", "Editing", "pencil", "#f59e0b"),
-    "testing": ActivityDefinition("testing", "Testing", "flask", "#14b8a6"),
-    "debugging": ActivityDefinition("debugging", "Debugging", "bug", "#f97316"),
-    "waiting": ActivityDefinition("waiting", "Waiting", "clock", "#6b7280"),
-    "blocked": ActivityDefinition("blocked", "Blocked", "circle-alert", "#dc2626"),
-    "reviewing": ActivityDefinition("reviewing", "Reviewing", "git-pull-request", "#16a34a"),
+    "reading": ActivityDefinition("reading", "Reading", "search", "#4c71f2", 0.10),
+    "planning": ActivityDefinition("planning", "Planning", "route", "#7c3aed", 0.20),
+    "editing": ActivityDefinition("editing", "Editing", "pencil", "#f59e0b", 0.45),
+    "testing": ActivityDefinition("testing", "Testing", "flask", "#14b8a6", 0.65),
+    "debugging": ActivityDefinition("debugging", "Debugging", "bug", "#f97316", 0.55),
+    "waiting": ActivityDefinition("waiting", "Waiting", "clock", "#6b7280", 0.50),
+    "blocked": ActivityDefinition("blocked", "Blocked", "circle-alert", "#dc2626", 0.50),
+    "reviewing": ActivityDefinition("reviewing", "Reviewing", "git-pull-request", "#16a34a", 0.85),
 }
 
 
@@ -183,6 +184,7 @@ def render_activity(
     changed: bool = True,
 ) -> None:
     cmux.set_activity(workspace_ref, definition.label, icon=definition.icon, color=definition.color)
+    cmux.set_progress(workspace_ref, definition.progress, label=definition.label)
     if changed:
         message = f"{definition.label}: {detail}" if detail else definition.label
         cmux.log(message, workspace_ref=workspace_ref, source="conductor-activity")

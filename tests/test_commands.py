@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -303,6 +304,7 @@ def test_activity_updates_task_timeline_and_cmux_status(config, fake_git_repo, f
     assert task.frontmatter.current_activity_detail == "Running pytest"
     assert "Testing - Running pytest" in timeline.read_text(encoding="utf-8")
     assert any(call[:3] == ["set-status", "agent_activity", "Testing"] for call in calls)
+    assert any(call[:2] == ["set-progress", "0.65"] and "--label" in call and "Testing" in call for call in calls)
     assert any(call[:2] == ["log", "--source"] and "Testing: Running pytest" in call for call in calls)
 
     with pytest.raises(ValueError, match="Unknown activity"):
@@ -341,13 +343,23 @@ def test_auto_pr_handoff_runs_tests_creates_pr_and_opens_cmux_browser(
 
     task = read_task_note(config, created["id"])
     calls = cmux_calls(fake_cmux)
+    session = read_sessions(config)["sessions"][created["id"]]
+    artifacts = list(Path(os.environ["VAULT_CONDUCTOR_ASSET_ROOT"]).rglob("*pr-review.html"))
     assert url == "https://github.test/demo/pull/1"
     assert task.frontmatter.status == "pr-opened"
     assert task.frontmatter.pr_url == url
     assert task.frontmatter.last_test_status == "passed"
     assert "Exit code: 0" in (config.prompts_root / "AGT-0001-pr-body.md").read_text(encoding="utf-8")
-    assert any(call[:4] == ["new-pane", "--type", "browser", "--direction"] and url in call for call in calls)
-    assert any(call[:2] == ["select-workspace", "--workspace"] and "workspace:1" in call for call in calls)
+    assert len(artifacts) == 1
+    artifact_html = artifacts[0].read_text(encoding="utf-8")
+    assert "PR review" in artifact_html
+    assert url in artifact_html
+    assert "Fake PR" in artifact_html
+    assert session["cmux_layout"]["panes"]["helper"] == "pane:4"
+    assert session["cmux_layout"]["surfaces"]["review_browser"] == "surface:4"
+    assert any(call[:4] == ["new-pane", "--type", "browser", "--direction"] and url in call and call[-2:] == ["--focus", "false"] for call in calls)
+    assert any(call[:3] == ["--json", "browser", "surface:4"] and "snapshot" in call for call in calls)
+    assert not any(call[:2] == ["select-workspace", "--workspace"] for call in calls)
 
 
 def test_auto_pr_handoff_creates_pr_from_already_committed_branch(config, fake_git_repo, fake_cmux, tmp_path):
@@ -409,7 +421,7 @@ def test_auto_pr_handoff_stops_when_tests_fail(config, fake_git_repo, fake_cmux,
 
     task = read_task_note(config, created["id"])
     calls = cmux_calls(fake_cmux)
-    artifacts = list((config.state_root.parent / "cmux-assets").rglob("*pr-failure.html"))
+    artifacts = list(Path(os.environ["VAULT_CONDUCTOR_ASSET_ROOT"]).rglob("*pr-failure.html"))
     assert task.frontmatter.status == "review-diff"
     assert task.frontmatter.pr_url is None
     assert task.frontmatter.last_test_status == "failed"

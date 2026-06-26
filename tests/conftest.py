@@ -82,6 +82,23 @@ def emit(data, text="OK"):
 def emit_text(text):
     print(text)
 
+def next_surface_ref(workspace):
+    count = sum(len(pane.get("surfaces", [])) for pane in workspace.get("panes", []))
+    return f"surface:{count + 1}"
+
+def add_surface(workspace, pane, surface_type, url=None):
+    surface_ref = next_surface_ref(workspace)
+    surface = {
+        "ref": surface_ref,
+        "type": surface_type,
+        "selected": True,
+    }
+    if url:
+        surface["url"] = url
+    pane.setdefault("surface_refs", []).append(surface_ref)
+    pane.setdefault("surfaces", []).append(surface)
+    return surface_ref
+
 if cmd == "ping":
     emit({"ok": True}, "OK")
 elif cmd == "identify":
@@ -96,7 +113,7 @@ elif cmd == "identify":
         "OK",
     )
 elif cmd == "capabilities":
-    emit({"commands": ["identify", "capabilities", "new-workspace", "markdown", "send", "notify"]}, "OK")
+    emit({"commands": ["identify", "capabilities", "new-workspace", "new-pane", "new-surface", "browser", "markdown", "send", "notify", "set-progress"]}, "OK")
 elif cmd == "new-workspace":
     data = read_state()
     ref = f"workspace:{len(data['workspaces']) + 1}"
@@ -137,6 +154,39 @@ elif cmd == "list-pane-surfaces":
     workspace = next((item for item in data["workspaces"] if item["ref"] == workspace_ref), None)
     pane = next((item for item in (workspace or {}).get("panes", []) if item["ref"] == pane_ref), None)
     emit({"workspace_ref": workspace_ref, "pane_ref": pane_ref, "surfaces": (pane or {}).get("surfaces", [])})
+elif cmd == "new-pane":
+    data = read_state()
+    workspace_ref = args[args.index("--workspace") + 1] if "--workspace" in args else "workspace:1"
+    surface_type = args[args.index("--type") + 1] if "--type" in args else "terminal"
+    url = args[args.index("--url") + 1] if "--url" in args else None
+    workspace = next((item for item in data["workspaces"] if item["ref"] == workspace_ref), None)
+    if workspace is None:
+        workspace = {"ref": workspace_ref, "id": workspace_ref, "name": "workspace", "panes": []}
+        data["workspaces"].append(workspace)
+    pane_ref = f"pane:{len(workspace.get('panes', [])) + 1}"
+    pane = {
+        "ref": pane_ref,
+        "surface_refs": [],
+        "surfaces": [],
+    }
+    surface_ref = add_surface(workspace, pane, surface_type, url=url)
+    workspace.setdefault("panes", []).append(pane)
+    write_state(data)
+    emit({"surface_ref": surface_ref, "pane_ref": pane_ref, "url": url}, f"OK surface={surface_ref} pane={pane_ref}")
+elif cmd == "new-surface":
+    data = read_state()
+    workspace_ref = args[args.index("--workspace") + 1] if "--workspace" in args else "workspace:1"
+    pane_ref = args[args.index("--pane") + 1] if "--pane" in args else None
+    surface_type = args[args.index("--type") + 1] if "--type" in args else "terminal"
+    url = args[args.index("--url") + 1] if "--url" in args else None
+    workspace = next((item for item in data["workspaces"] if item["ref"] == workspace_ref), None)
+    pane = next((item for item in (workspace or {}).get("panes", []) if item["ref"] == pane_ref), None)
+    if workspace is None or pane is None:
+        emit({"ok": False}, "ERROR pane not found")
+        sys.exit(1)
+    surface_ref = add_surface(workspace, pane, surface_type, url=url)
+    write_state(data)
+    emit({"surface_ref": surface_ref, "pane_ref": pane_ref, "url": url}, f"OK surface={surface_ref} pane={pane_ref}")
 elif cmd == "read-screen":
     sequence = os.environ.get("FAKE_CMUX_SCREEN_SEQUENCE")
     if sequence is not None:
@@ -151,6 +201,33 @@ elif cmd == "read-screen":
     emit({"text": text}, text)
 elif cmd == "events":
     sys.exit(0)
+elif cmd == "browser":
+    surface_ref = args[1] if len(args) > 1 else "surface:1"
+    action = args[2] if len(args) > 2 else ""
+    if action == "snapshot":
+        emit(
+            {
+                "surface_ref": surface_ref,
+                "title": "Fake PR",
+                "url": "https://github.test/demo/pull/1",
+                "text": "Fake pull request snapshot",
+            },
+            "Fake pull request snapshot",
+        )
+    elif action == "screenshot":
+        out_path = args[args.index("--out") + 1] if "--out" in args else ""
+        if out_path:
+            Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(out_path).write_text("fake screenshot", encoding="utf-8")
+        emit({"surface_ref": surface_ref, "out": out_path}, "OK")
+    elif action == "wait":
+        emit({"surface_ref": surface_ref, "ok": True}, "OK")
+    elif action == "get":
+        prop = args[3] if len(args) > 3 else "url"
+        value = "Fake PR" if prop == "title" else "https://github.test/demo/pull/1"
+        emit({"surface_ref": surface_ref, prop: value, "value": value}, value)
+    else:
+        emit({"surface_ref": surface_ref, "ok": True}, "OK")
 elif cmd == "markdown":
     data = read_state()
     workspace_ref = args[args.index("--workspace") + 1] if "--workspace" in args else "workspace:1"
@@ -178,7 +255,7 @@ elif cmd == "markdown":
     write_state(data)
     path = args[2] if len(args) > 2 else ""
     emit({"surface_ref": surface_ref, "pane_ref": pane_ref}, f"OK surface={surface_ref} pane={pane_ref} path={path}")
-elif cmd in {"send", "send-key", "close-workspace", "set-status", "notify"}:
+elif cmd in {"send", "send-key", "close-workspace", "set-status", "set-progress", "clear-progress", "notify"}:
     emit({"ok": True}, "OK")
 else:
     emit({"ok": True}, "OK")
@@ -199,6 +276,7 @@ def config(tmp_path, monkeypatch):
     repos = tmp_path / "repos"
     runtime = tmp_path / "runtime"
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("VAULT_CONDUCTOR_ASSET_ROOT", str(tmp_path / "cmux-assets"))
     return load_config(vault=vault, repos=repos, runtime_root=runtime)
 
 

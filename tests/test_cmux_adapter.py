@@ -154,6 +154,67 @@ def test_adapter_captures_review_artifact_without_stealing_focus(fake_cmux, tmp_
     assert calls[-1][-2:] == ["--focus", "false"]
 
 
+def test_durable_asset_root_prefers_configured_root_and_sanitizes_branch(tmp_path, monkeypatch):
+    preferred = tmp_path / "preferred-assets"
+    fallback = tmp_path / "repo"
+    monkeypatch.setenv("VAULT_CONDUCTOR_ASSET_ROOT", str(preferred))
+
+    root = cmux.durable_asset_root("feature/review browser", "AGT-0001", fallback_root=fallback)
+
+    assert root == preferred / "feature-review-browser" / "AGT-0001"
+    assert root.is_dir()
+
+
+def test_adapter_opens_browser_in_reused_helper_pane(fake_cmux, tmp_path):
+    adapter = CmuxAdapter()
+    workspace_ref = adapter.new_workspace(name="AGT-0001", description="Review", cwd=tmp_path, command="sleep 1")
+    layout = CmuxWorkspaceLayout(workspace_ref=workspace_ref, surfaces={"agent": "surface:1"})
+
+    first = adapter.open_browser_in_helper(layout, "https://github.test/demo/pull/1")
+    second = adapter.open_browser_in_helper(first, "https://github.test/demo/pull/1/files")
+
+    calls = cmux_calls(fake_cmux)
+    browser_pane_calls = [call for call in calls if call[:4] == ["new-pane", "--type", "browser", "--direction"]]
+    browser_surface_calls = [call for call in calls if call[:1] == ["new-surface"] and "--type" in call and "browser" in call]
+    assert first.panes["helper"] == "pane:2"
+    assert first.review_browser_surface_ref == "surface:2"
+    assert second.panes["helper"] == "pane:2"
+    assert second.review_browser_surface_ref == "surface:3"
+    assert len(browser_pane_calls) == 1
+    assert browser_pane_calls[0][-2:] == ["--focus", "false"]
+    assert browser_surface_calls == [
+        [
+            "new-surface",
+            "--workspace",
+            workspace_ref,
+            "--pane",
+            "pane:2",
+            "--type",
+            "browser",
+            "--url",
+            "https://github.test/demo/pull/1/files",
+            "--focus",
+            "false",
+        ]
+    ]
+
+
+def test_adapter_captures_browser_snapshot_and_screenshot(fake_cmux, tmp_path):
+    adapter = CmuxAdapter()
+    screenshot = tmp_path / "browser.png"
+
+    snapshot = adapter.browser_snapshot("surface:2")
+    result = adapter.browser_screenshot("surface:2", screenshot)
+
+    calls = cmux_calls(fake_cmux)
+    assert snapshot["surface_ref"] == "surface:2"
+    assert snapshot["title"] == "Fake PR"
+    assert result == screenshot
+    assert screenshot.read_text(encoding="utf-8") == "fake screenshot"
+    assert any(call[:3] == ["--json", "browser", "surface:2"] and "snapshot" in call for call in calls)
+    assert any(call[:3] == ["browser", "surface:2", "screenshot"] and str(screenshot) in call for call in calls)
+
+
 def test_present_handoff_respects_non_disruptive_focus_policy(fake_cmux):
     adapter = CmuxAdapter()
     layout = CmuxWorkspaceLayout(workspace_ref="workspace:1", surfaces={"agent": "surface:1"})

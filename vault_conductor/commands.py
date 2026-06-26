@@ -6,7 +6,7 @@ import subprocess
 import sys
 from importlib import metadata
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 from urllib.parse import unquote, urlparse
 
 from . import cmux
@@ -473,32 +473,94 @@ def pr_handoff_command(
     pr_url = result.stdout.strip()
     update_task_frontmatter(config, task_id, {"pr_url": pr_url, "last_test_status": test_result})
     replace_task_section(config, task_id, "Decision", f"PR opened: {pr_url}")
-    open_pr_in_workspace(config, task_id, pr_url)
+    handoff = open_pr_in_workspace(config, task_id, pr_url)
+    capture_pr_review_artifact(
+        config,
+        task_id,
+        pr_url=pr_url,
+        test_summary=test_summary,
+        test_result=test_result,
+        browser_snapshot=handoff.get("browser_snapshot", {}),
+    )
     mark_task(config, task_id, "pr-opened")
     return pr_url
 
 
-def open_pr_in_workspace(config: Config, task_id: str, pr_url: str) -> None:
+def open_pr_in_workspace(config: Config, task_id: str, pr_url: str) -> dict[str, Any]:
     session = read_sessions(config).get("sessions", {}).get(task_id)
     workspace_ref = session.get("workspace_ref") if session else None
     if not workspace_ref:
-        return
+        return {}
     layout = cmux.CmuxWorkspaceLayout.from_session(session)
     focus_policy = cmux.CmuxHITLPolicy(
-        focus_new_surfaces=True,
-        browser_focus=True,
-        allow_select_workspace=True,
+        focus_new_surfaces=False,
+        browser_focus=False,
+        allow_select_workspace=False,
         notify=False,
         open_browser=True,
     )
-    cmux.present_handoff(layout, pr_url=pr_url, focus_policy=focus_policy)
+    layout = cmux.present_handoff(layout, pr_url=pr_url, focus_policy=focus_policy)
+    session.update(layout.to_session_patch())
+    upsert_session(config, task_id, session)
+    snapshot = {}
+    if layout.review_browser_surface_ref:
+        cmux.browser_wait(layout.review_browser_surface_ref)
+        snapshot = cmux.browser_snapshot(layout.review_browser_surface_ref)
+    return {"layout": layout, "browser_snapshot": snapshot}
+
+
+def capture_pr_review_artifact(
+    config: Config,
+    task_id: str,
+    *,
+    pr_url: str,
+    test_summary: str,
+    test_result: str,
+    browser_snapshot: Mapping[str, Any] | None = None,
+) -> Path:
+    task = read_task_note(config, task_id)
+    sessions = read_sessions(config).get("sessions", {})
+    layout = cmux.CmuxWorkspaceLayout.from_session(sessions.get(task_id))
+    artifact_path = review_artifact_path(
+        config,
+        task_id,
+        task.frontmatter.branch,
+        "pr-review",
+        fallback_root=task.frontmatter.repo_path,
+    )
+    evidence = {
+        "task": task_id,
+        "title": task.frontmatter.title,
+        "status": "PR review",
+        "pr_url": pr_url,
+        "test_result": test_result,
+        "test": test_summary,
+        "browser_snapshot": dict(browser_snapshot or {}),
+        "worktree": task.frontmatter.worktree,
+        "branch": task.frontmatter.branch,
+    }
+    path = cmux.capture_review_artifact(
+        artifact_path,
+        title=f"{task_id} PR review",
+        evidence=evidence,
+        layout=layout if layout.workspace_ref else None,
+        policy=cmux.CmuxHITLPolicy(open_browser=False),
+    )
+    append_task_log(config, task_id, f"PR review artifact captured: {path}")
+    return path
 
 
 def capture_pr_failure_artifact(config: Config, task_id: str, *, test_summary: str) -> Path:
     task = read_task_note(config, task_id)
     sessions = read_sessions(config).get("sessions", {})
     layout = cmux.CmuxWorkspaceLayout.from_session(sessions.get(task_id))
-    artifact_path = review_artifact_path(config, task_id, task.frontmatter.branch, "pr-failure")
+    artifact_path = review_artifact_path(
+        config,
+        task_id,
+        task.frontmatter.branch,
+        "pr-failure",
+        fallback_root=task.frontmatter.repo_path,
+    )
     evidence = {
         "task": task_id,
         "title": task.frontmatter.title,
@@ -519,13 +581,16 @@ def capture_pr_failure_artifact(config: Config, task_id: str, *, test_summary: s
     return path
 
 
-def review_artifact_path(config: Config, task_id: str, branch: str | None, suffix: str) -> Path:
-    return config.state_root.parent / "cmux-assets" / safe_path_slug(branch or task_id) / f"{task_id}-{suffix}.html"
-
-
-def safe_path_slug(value: str) -> str:
-    slug = "".join(char if char.isalnum() or char in {"-", "_", "."} else "-" for char in value)
-    return slug.strip("-") or "task"
+def review_artifact_path(
+    config: Config,
+    task_id: str,
+    branch: str | None,
+    suffix: str,
+    *,
+    fallback_root: str | Path | None = None,
+) -> Path:
+    root = cmux.durable_asset_root(branch or task_id, task_id, fallback_root=fallback_root or config.state_root.parent)
+    return root / f"{task_id}-{suffix}.html"
 
 
 def notify_task(config: Config, task_id: str, title: str, body: str) -> None:

@@ -152,6 +152,10 @@ class CmuxWorkspaceLayout:
     def review_browser_surface_ref(self) -> str | None:
         return self.surfaces.get("review_browser")
 
+    @property
+    def helper_pane_ref(self) -> str | None:
+        return self.panes.get("helper")
+
     @classmethod
     def from_session(cls, record: Mapping[str, Any] | None) -> CmuxWorkspaceLayout:
         record = record or {}
@@ -213,6 +217,19 @@ class CmuxWorkspaceLayout:
             workspace_id=self.workspace_id,
             panes=dict(self.panes),
             surfaces=surfaces,
+            target=self.target,
+        )
+
+    def with_pane(self, role: str, pane_ref: str | None) -> CmuxWorkspaceLayout:
+        if not pane_ref:
+            return self
+        panes = dict(self.panes)
+        panes[role] = pane_ref
+        return CmuxWorkspaceLayout(
+            workspace_ref=self.workspace_ref,
+            workspace_id=self.workspace_id,
+            panes=panes,
+            surfaces=dict(self.surfaces),
             target=self.target,
         )
 
@@ -397,6 +414,12 @@ class CmuxAdapter:
             workspace_ref,
         )
 
+    def set_progress(self, workspace_ref: str, value: float, *, label: str) -> None:
+        self.run("set-progress", f"{value:.2f}", "--label", label, "--workspace", workspace_ref)
+
+    def clear_progress(self, workspace_ref: str) -> None:
+        self.run("clear-progress", "--workspace", workspace_ref)
+
     def log(self, message: str, *, workspace_ref: str | None = None, source: str = "conductor") -> None:
         args = ["log", "--source", source]
         if workspace_ref:
@@ -427,6 +450,85 @@ class CmuxAdapter:
         if not result.ok:
             return None
         return surface_ref_from_output(result.stdout)
+
+    def open_browser_in_helper(
+        self,
+        layout: CmuxWorkspaceLayout,
+        url: str,
+        *,
+        policy: CmuxHITLPolicy | None = None,
+        role: str = "review_browser",
+    ) -> CmuxWorkspaceLayout:
+        if not layout.workspace_ref:
+            raise ValueError("Cannot open browser without a cmux workspace")
+        focus_policy = policy or CmuxHITLPolicy.non_disruptive()
+        helper_pane = layout.helper_pane_ref or self.discover_helper_pane(layout)
+        if helper_pane:
+            result = self.run(
+                "new-surface",
+                "--workspace",
+                layout.workspace_ref,
+                "--pane",
+                helper_pane,
+                "--type",
+                "browser",
+                "--url",
+                url,
+                "--focus",
+                focus_policy.focus_value(browser=True),
+            )
+        else:
+            result = self.run(
+                "new-pane",
+                "--type",
+                "browser",
+                "--direction",
+                "right",
+                "--workspace",
+                layout.workspace_ref,
+                "--url",
+                url,
+                "--focus",
+                focus_policy.focus_value(browser=True),
+            )
+        if not result.ok:
+            return layout
+        pane_ref = pane_ref_from_output(result.stdout) or helper_pane
+        surface_ref = surface_ref_from_output(result.stdout)
+        return layout.with_pane("helper", pane_ref).with_surface(role, surface_ref)
+
+    def discover_helper_pane(self, layout: CmuxWorkspaceLayout) -> str | None:
+        if not layout.workspace_ref:
+            return None
+        panes = self.json("list-panes", "--workspace", layout.workspace_ref).get("panes", [])
+        for pane in panes:
+            pane_ref = _first_str(pane.get("ref"))
+            surfaces = pane.get("surfaces") if isinstance(pane.get("surfaces"), list) else []
+            if any(surface.get("ref") == layout.agent_surface_ref for surface in surfaces):
+                continue
+            if any(surface.get("type") == "browser" for surface in surfaces):
+                return pane_ref
+        return None
+
+    def browser_wait(self, surface_ref: str, *, load_state: str = "complete", timeout_ms: int = 15000) -> CmuxCommandResult:
+        return self.run(
+            "browser",
+            surface_ref,
+            "wait",
+            "--load-state",
+            load_state,
+            "--timeout-ms",
+            str(timeout_ms),
+        )
+
+    def browser_snapshot(self, surface_ref: str) -> dict[str, Any]:
+        return self.json("browser", surface_ref, "snapshot", "--interactive", "--compact")
+
+    def browser_screenshot(self, surface_ref: str, out_path: str | Path) -> Path:
+        path = Path(out_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.run("browser", surface_ref, "screenshot", "--out", path)
+        return path
 
     def select_workspace(self, workspace_ref: str) -> None:
         self.run("select-workspace", "--workspace", workspace_ref)
@@ -590,8 +692,7 @@ class CmuxAdapter:
             return layout
         policy = focus_policy or CmuxHITLPolicy.non_disruptive()
         if policy.open_browser:
-            browser_surface = self.open_browser_split(pr_url, layout.workspace_ref, focus=policy.browser_focus)
-            layout = layout.with_surface("review_browser", browser_surface)
+            layout = self.open_browser_in_helper(layout, pr_url, policy=policy, role="review_browser")
         if policy.allow_select_workspace:
             self.select_workspace(layout.workspace_ref)
         if policy.notify:
@@ -613,7 +714,7 @@ class CmuxAdapter:
         if layout and layout.workspace_ref:
             focus_policy = policy or CmuxHITLPolicy.non_disruptive()
             if focus_policy.open_browser:
-                self.open_browser_split(path.resolve().as_uri(), layout.workspace_ref, focus=focus_policy.browser_focus)
+                self.open_browser_in_helper(layout, path.resolve().as_uri(), policy=focus_policy, role="artifact")
         return path
 
 
@@ -667,12 +768,33 @@ def surface_ref_from_output(out: str) -> str | None:
     return None
 
 
+def pane_ref_from_output(out: str) -> str | None:
+    data = _parse_json(out)
+    ref = _pane_ref_from_data(data if isinstance(data, dict) else {})
+    if ref:
+        return ref
+    for token in out.replace(",", " ").split():
+        if token.startswith("pane="):
+            return token.split("=", 1)[1]
+        if token.startswith("pane:"):
+            return token
+    return None
+
+
 def set_status(workspace_ref: str, status: str, *, icon: str = "sparkle", color: str = "#4c71f2") -> None:
     _default_adapter.set_status(workspace_ref, status, icon=icon, color=color)
 
 
 def set_activity(workspace_ref: str, label: str, *, icon: str, color: str) -> None:
     _default_adapter.set_activity(workspace_ref, label, icon=icon, color=color)
+
+
+def set_progress(workspace_ref: str, value: float, *, label: str) -> None:
+    _default_adapter.set_progress(workspace_ref, value, label=label)
+
+
+def clear_progress(workspace_ref: str) -> None:
+    _default_adapter.clear_progress(workspace_ref)
 
 
 def log(message: str, *, workspace_ref: str | None = None, source: str = "conductor") -> None:
@@ -685,6 +807,28 @@ def notify(title: str, body: str, workspace_ref: str | None = None) -> None:
 
 def open_browser_split(url: str, workspace_ref: str) -> None:
     _default_adapter.open_browser_split(url, workspace_ref, focus=True)
+
+
+def open_browser_in_helper(
+    layout: CmuxWorkspaceLayout,
+    url: str,
+    *,
+    policy: CmuxHITLPolicy | None = None,
+    role: str = "review_browser",
+) -> CmuxWorkspaceLayout:
+    return _default_adapter.open_browser_in_helper(layout, url, policy=policy, role=role)
+
+
+def browser_wait(surface_ref: str, *, load_state: str = "complete", timeout_ms: int = 15000) -> CmuxCommandResult:
+    return _default_adapter.browser_wait(surface_ref, load_state=load_state, timeout_ms=timeout_ms)
+
+
+def browser_snapshot(surface_ref: str) -> dict[str, Any]:
+    return _default_adapter.browser_snapshot(surface_ref)
+
+
+def browser_screenshot(surface_ref: str, out_path: str | Path) -> Path:
+    return _default_adapter.browser_screenshot(surface_ref, out_path)
 
 
 def select_workspace(workspace_ref: str) -> None:
@@ -811,6 +955,28 @@ def capture_review_artifact(
     )
 
 
+def durable_asset_root(branch: str | None, artifact_slug: str, *, fallback_root: str | Path) -> Path:
+    branch_slug = safe_path_slug(branch or "task")
+    artifact_slug = safe_path_slug(artifact_slug)
+    configured_root = os.environ.get("VAULT_CONDUCTOR_ASSET_ROOT")
+    preferred_root = Path(configured_root) if configured_root else Path("/cmux-assets")
+    try:
+        root = preferred_root / branch_slug / artifact_slug
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+    except OSError:
+        root = Path(fallback_root) / "cmux-assets" / branch_slug / artifact_slug
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
+
+def safe_path_slug(value: str) -> str:
+    slug = "".join(char if char.isalnum() or char in {"-", "_", "."} else "-" for char in value)
+    while "--" in slug:
+        slug = slug.replace("--", "-")
+    return slug.strip("-") or "artifact"
+
+
 def _parse_json(text: str) -> Any | None:
     if not text:
         return None
@@ -858,6 +1024,11 @@ def _workspace_ref_from_text(text: str) -> str | None:
 def _surface_ref_from_data(data: Mapping[str, Any]) -> str | None:
     surface = _mapping(data.get("surface"))
     return _first_str(surface.get("ref"), surface.get("id"), data.get("surface_ref"), data.get("ref"), data.get("id"))
+
+
+def _pane_ref_from_data(data: Mapping[str, Any]) -> str | None:
+    pane = _mapping(data.get("pane"))
+    return _first_str(pane.get("ref"), pane.get("id"), data.get("pane_ref"), data.get("pane_id"))
 
 
 def _render_artifact_html(*, title: str, evidence: Mapping[str, Any]) -> str:
