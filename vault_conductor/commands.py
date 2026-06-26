@@ -14,7 +14,9 @@ from .activity import create_activity_timeline, record_activity
 from .agents import build_prompt, detect_agent_activity, detect_agent_status, provider_command, template_variables
 from .config import Config, config_to_yaml
 from .constants import BOARD_COLUMNS, TASK_STATUSES
+from .engine import ConductorEngine
 from .git_ops import (
+    get_branch_diff_stat,
     get_diff_name_only,
     get_diff_stat,
     get_full_diff,
@@ -34,7 +36,6 @@ from .kanban import (
     update_card_line,
 )
 from .markdown import write_file_atomic
-from .operational_log import append_operational_log
 from .repos import RepoEntry, find_repo, load_repo_registry, registry_path, scan_repos, sync_project_notes
 from .run_notes import append_run_followup, create_run_note, update_run_frontmatter
 from .sessions import read_sessions, remove_session, transcript_hash, upsert_session
@@ -257,67 +258,21 @@ def write_board(config: Config, board) -> None:
 
 
 def record_status_change(config: Config, task_id: str, before_status: str, after_status: str, *, actor: str, source: str) -> None:
-    if before_status == after_status:
-        return
-    task = read_task_note(config, task_id)
-    append_task_log(config, task_id, f"Status changed: {before_status} -> {after_status}.")
-    append_operational_log(
-        config,
-        "conductor-status",
-        (
-            f"status changed task={task_id} from={before_status} to={after_status} "
-            f"repo={task.frontmatter.repo} actor={actor} source={source}"
-        ),
-    )
+    ConductorEngine(config).record_status_change(task_id, before_status, after_status, actor=actor, source=source)
 
 
 def mark_task(config: Config, task_id: str, status: str, *, human: bool = False) -> None:
-    if status not in TASK_STATUSES:
-        raise ValueError(f"Invalid status: {status}")
-    if status == "done" and not human:
-        raise ValueError("Only a human may mark a task done. Rerun with --human after review/merge.")
-    before = read_task_note(config, task_id)
-    update_task_frontmatter(config, task_id, {"status": status})
-    after = read_task_note(config, task_id)
-    board = read_board(config)
-    existing = find_card(board, task_id)
-    line = update_card_line(
-        existing.card.line if existing else build_card_line(before.frontmatter),
-        task=after.frontmatter,
-        checked=status == "done",
-    )
-    move_card(board, task_id, status_to_column(config, status), status=status, checked=status == "done", card_line=line)
-    write_board(config, board)
-    record_status_change(
-        config,
+    ConductorEngine(config).set_task_status(
         task_id,
-        before.frontmatter.status,
-        after.frontmatter.status,
+        status,
         actor="human" if human else "conductor",
         source="mark",
+        human=human,
     )
-    session = read_sessions(config).get("sessions", {}).get(task_id)
-    if session and session.get("workspace_ref"):
-        session["status"] = status
-        upsert_session(config, task_id, session)
-        cmux.set_status(session["workspace_ref"], status)
-        notify_status_change(config, task_id, status, session["workspace_ref"])
-        if session.get("run_id") and status in {"review-diff", "failed", "parked", "pr-opened", "done"}:
-            update_run_frontmatter(config, session["run_id"], {"status": status, "ended": now_iso()})
-    sync_project_notes(config)
 
 
 def notify_status_change(config: Config, task_id: str, status: str, workspace_ref: str) -> None:
-    if status == "needs-human":
-        cmux.notify(f"{task_id} needs human input", "The agent is waiting for a decision.", workspace_ref)
-    elif status == "review-diff":
-        cmux.notify(f"{task_id} ready for review", "Diff and test information are ready to inspect.", workspace_ref)
-    elif status == "failed":
-        cmux.notify(f"{task_id} failed", "The agent run failed and needs attention.", workspace_ref)
-    elif status == "pr-opened":
-        task = read_task_note(config, task_id)
-        body = task.frontmatter.pr_url or "Pull request opened."
-        cmux.notify(f"{task_id} PR opened", body, workspace_ref)
+    ConductorEngine(config).notify_status_change(task_id, status, workspace_ref)
 
 
 def move_command(config: Config, task_id: str, column_or_status: str, *, human: bool = False) -> None:
@@ -339,36 +294,7 @@ def move_command(config: Config, task_id: str, column_or_status: str, *, human: 
 
 
 def sync_command(config: Config, *, board_wins: bool = False) -> dict[str, int]:
-    tasks = read_all_task_notes(config)
-    board = read_board(config)
-    for task in tasks:
-        status = task.frontmatter.status
-        if board_wins:
-            located = find_card(board, task.frontmatter.id)
-            board_status = status_from_column(config, located.column_title) if located else None
-            if board_status and board_status != status:
-                before_status = status
-                update_task_frontmatter(config, task.frontmatter.id, {"status": board_status})
-                status = board_status
-                task = read_task_note(config, task.frontmatter.id)
-                record_status_change(
-                    config,
-                    task.frontmatter.id,
-                    before_status,
-                    status,
-                    actor="human",
-                    source="sync-board-wins",
-                )
-        located = find_card(board, task.frontmatter.id)
-        line = update_card_line(
-            located.card.line if located else build_card_line(task.frontmatter),
-            task=task.frontmatter,
-            checked=status == "done",
-        )
-        move_card(board, task.frontmatter.id, status_to_column(config, status), status=status, checked=status == "done", card_line=line)
-    write_board(config, board)
-    sync_project_notes(config)
-    return {"synced": len(tasks)}
+    return ConductorEngine(config).sync_board(board_wins=board_wins)
 
 
 def start_task(config: Config, task_id: str) -> dict[str, str]:
@@ -396,9 +322,8 @@ def start_task(config: Config, task_id: str) -> dict[str, str]:
         focus=False,
     )
     surface_ref = cmux.terminal_surface(workspace_ref)
-    cmux.markdown_open(task.abs_path, workspace_ref)
-    cmux.markdown_open(run.abs_path, workspace_ref)
-    cmux.markdown_open(activity_path, workspace_ref)
+    run_surface_ref = cmux.markdown_open(run.abs_path, workspace_ref, surface_ref=surface_ref, direction="right")
+    cmux.markdown_open(task.abs_path, workspace_ref, surface_ref=run_surface_ref or surface_ref, direction="down")
     cmux.set_status(workspace_ref, "running")
 
     update_task_frontmatter(
@@ -606,8 +531,12 @@ def pr_handoff_command(
     if task.frontmatter.status not in {"review-diff", "needs-revision"} and not force:
         raise ValueError(f"Task {task_id} must be in review-diff before PR handoff, or pass --force.")
     diff = get_diff_stat(task.frontmatter.worktree)
-    if not diff.strip():
+    branch_diff = get_branch_diff_stat(task.frontmatter.worktree, task.frontmatter.base_branch or "main")
+    handoff_diff = diff or branch_diff
+    if not handoff_diff.strip():
         raise ValueError(f"Task {task_id} has no diff to hand off.")
+    replace_task_section(config, task_id, "Diff summary", handoff_diff)
+    update_task_frontmatter(config, task_id, {"last_diff_stat": handoff_diff})
 
     test_summary = "No test command configured. PR handoff is untested."
     test_result = "untested"
@@ -628,10 +557,11 @@ def pr_handoff_command(
     if shutil.which("gh") is None:
         raise ValueError("GitHub CLI `gh` is not available.")
 
-    run_git(["-C", task.frontmatter.worktree, "add", "-A"], check=True)
-    commit_result = run_git(["-C", task.frontmatter.worktree, "commit", "-m", f"{task_id}: {task.frontmatter.title}"])
-    if commit_result.returncode != 0:
-        raise RuntimeError(commit_result.stderr or commit_result.stdout or "git commit failed")
+    if diff.strip():
+        run_git(["-C", task.frontmatter.worktree, "add", "-A"], check=True)
+        commit_result = run_git(["-C", task.frontmatter.worktree, "commit", "-m", f"{task_id}: {task.frontmatter.title}"])
+        if commit_result.returncode != 0:
+            raise RuntimeError(commit_result.stderr or commit_result.stdout or "git commit failed")
     run_git(["-C", task.frontmatter.worktree, "push", "-u", "origin", task.frontmatter.branch], check=True)
 
     task = read_task_note(config, task_id)

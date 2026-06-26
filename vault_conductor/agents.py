@@ -23,7 +23,8 @@ You are working on a task managed by an Obsidian Kanban Agent Control Room.
 7. Use only these activities: reading, planning, editing, testing, debugging, waiting, blocked, reviewing.
 8. If blocked on a human, ask exactly one specific question and set status to `needs-human`; if you cannot edit the note, clearly print `AGENT_STATUS: needs-human`.
 9. When implementation is ready for review, set status to `review-diff`; if you cannot edit the note, clearly print `AGENT_STATUS: review-diff`.
-10. Include changed files, test results, and risks in your final summary.
+10. When a human asks you to commit, push, hand off, or open a PR after the task is ready for review, run `conductor pr {task.frontmatter.id} --auto`. Do not stop after a raw git push; PR handoff moves the task to `pr-opened`.
+11. Include changed files, test results, and risks in your final summary.
 
 ## Task note
 
@@ -49,7 +50,7 @@ Log file: {run.frontmatter.log_file}
 
 At completion, provide:
 
-- status: one of `needs-human`, `review-diff`, or `failed`
+- status: one of `needs-human`, `review-diff`, `pr-opened`, or `failed`
 - summary
 - changed files
 - tests run

@@ -100,6 +100,16 @@ def get_diff_stat(path: Path | str) -> str:
     return "\n".join(part for part in [status, diff] if part)
 
 
+def get_branch_diff_stat(path: Path | str, base_branch: str = "main") -> str:
+    base_ref = f"origin/{base_branch}"
+    if run_git(["-C", str(path), "rev-parse", "--verify", "--quiet", base_ref]).returncode != 0:
+        base_ref = base_branch
+    result = run_git(["-C", str(path), "diff", "--stat", f"{base_ref}...HEAD"])
+    if result.returncode == 0:
+        return result.stdout.strip()
+    return run_git(["-C", str(path), "diff", "--stat", f"{base_ref}..HEAD"]).stdout.strip()
+
+
 def get_diff_name_only(path: Path | str) -> list[str]:
     return [line for line in run_git(["-C", str(path), "diff", "--name-only"]).stdout.splitlines() if line]
 

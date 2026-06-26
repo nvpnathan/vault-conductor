@@ -149,6 +149,8 @@ conductor mark AGT-0001 done --human
 
 Use `conductor pr <TASK_ID> --auto` only after implementation is ready for review. It creates the PR when gates pass and opens it in the task's cmux workspace. Only the human may mark `done`; never do this automatically after tests or PR creation.
 
+When the human asks you to commit, push, hand off, or open a PR for a task that is already in review, run `conductor pr <TASK_ID> --auto`. Do not stop after a raw `git commit` or `git push`; PR handoff is what moves the task to `pr-opened`.
+
 ## Sync And Drift
 
 If task notes and board cards drift because a human edited Markdown or dragged cards in Obsidian:

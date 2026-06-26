@@ -67,8 +67,46 @@ def new_workspace(*, name: str, description: str, cwd: str | Path, command: str,
     raise RuntimeError(f"Unexpected cmux new-workspace response: {out!r}")
 
 
-def markdown_open(path: str | Path, workspace_ref: str) -> None:
-    run_cmux("markdown", "open", str(path), "--workspace", workspace_ref)
+def markdown_open(
+    path: str | Path,
+    workspace_ref: str,
+    *,
+    surface_ref: str | None = None,
+    direction: str | None = None,
+    focus: bool = False,
+) -> str | None:
+    args = ["markdown", "open", str(path), "--workspace", workspace_ref]
+    if surface_ref:
+        args.extend(["--surface", surface_ref])
+    if direction:
+        args.extend(["--direction", direction])
+    args.extend(["--focus", "true" if focus else "false"])
+    out, rc = run_cmux(*args)
+    if rc != 0:
+        return None
+    return surface_ref_from_output(out)
+
+
+def surface_ref_from_output(out: str) -> str | None:
+    try:
+        data = json.loads(out)
+    except json.JSONDecodeError:
+        data = {}
+    ref = (
+        data.get("surface", {}).get("ref")
+        or data.get("surface", {}).get("id")
+        or data.get("surface_ref")
+        or data.get("ref")
+        or data.get("id")
+    )
+    if ref:
+        return str(ref)
+    for token in out.replace(",", " ").split():
+        if token.startswith("surface="):
+            return token.split("=", 1)[1]
+        if token.startswith("surface:"):
+            return token
+    return None
 
 
 def set_status(workspace_ref: str, status: str, *, icon: str = "sparkle", color: str = "#4c71f2") -> None:

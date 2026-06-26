@@ -125,7 +125,34 @@ elif cmd == "read-screen":
     emit({"text": text}, text)
 elif cmd == "events":
     sys.exit(0)
-elif cmd in {"markdown", "send", "send-key", "close-workspace", "set-status", "notify"}:
+elif cmd == "markdown":
+    data = read_state()
+    workspace_ref = args[args.index("--workspace") + 1] if "--workspace" in args else "workspace:1"
+    workspace = next((item for item in data["workspaces"] if item["ref"] == workspace_ref), None)
+    if workspace is None:
+        emit({"ok": False}, "ERROR workspace not found")
+        sys.exit(1)
+    surface_number = sum(len(pane.get("surfaces", [])) for pane in workspace.get("panes", [])) + 1
+    pane_number = len(workspace.get("panes", [])) + 1
+    surface_ref = f"surface:{surface_number}"
+    pane_ref = f"pane:{pane_number}"
+    workspace.setdefault("panes", []).append(
+        {
+            "ref": pane_ref,
+            "surface_refs": [surface_ref],
+            "surfaces": [
+                {
+                    "ref": surface_ref,
+                    "type": "markdown",
+                    "selected": True,
+                }
+            ],
+        }
+    )
+    write_state(data)
+    path = args[2] if len(args) > 2 else ""
+    emit({"surface_ref": surface_ref, "pane_ref": pane_ref}, f"OK surface={surface_ref} pane={pane_ref} path={path}")
+elif cmd in {"send", "send-key", "close-workspace", "set-status", "notify"}:
     emit({"ok": True}, "OK")
 else:
     emit({"ok": True}, "OK")

@@ -215,11 +215,40 @@ def test_start_creates_cmux_session_run_prompt_and_sends_prompt_file_instruction
     assert task.frontmatter.surface_ref == "surface:1"
     assert task.frontmatter.cmux_command == "cmux codex-teams"
     assert (config.worktrees_root / "demo" / created["id"]).is_dir()
-    assert (config.prompts_root / "AGT-0001-RUN-001.prompt.md").read_text(encoding="utf-8").startswith(
-        "# Agent Control Room Task"
-    )
+    prompt_text = (config.prompts_root / "AGT-0001-RUN-001.prompt.md").read_text(encoding="utf-8")
+    assert prompt_text.startswith("# Agent Control Room Task")
+    assert "conductor pr AGT-0001 --auto" in prompt_text
     assert (config.runs_dir / "AGT-0001-RUN-001-activity.md").exists()
     assert "codex-teams" in " ".join(new_workspace_call)
+    markdown_calls = [call for call in calls if call[:2] == ["markdown", "open"]]
+    assert markdown_calls[:2] == [
+        [
+            "markdown",
+            "open",
+            str(config.runs_dir / "AGT-0001-RUN-001-codex.md"),
+            "--workspace",
+            "workspace:1",
+            "--surface",
+            "surface:1",
+            "--direction",
+            "right",
+            "--focus",
+            "false",
+        ],
+        [
+            "markdown",
+            "open",
+            str(config.tasks_dir / "AGT-0001 Start in cmux.md"),
+            "--workspace",
+            "workspace:1",
+            "--surface",
+            "surface:2",
+            "--direction",
+            "down",
+            "--focus",
+            "false",
+        ],
+    ]
     assert "read the prompt file" in " ".join(send_call)
     assert send_call[:5] == ["send", "--workspace", "workspace:1", "--surface", "surface:1"]
     assert str(config.prompts_root / "AGT-0001-RUN-001.prompt.md") in " ".join(send_call)
@@ -319,6 +348,40 @@ def test_auto_pr_handoff_runs_tests_creates_pr_and_opens_cmux_browser(
     assert "Exit code: 0" in (config.prompts_root / "AGT-0001-pr-body.md").read_text(encoding="utf-8")
     assert any(call[:4] == ["new-pane", "--type", "browser", "--direction"] and url in call for call in calls)
     assert any(call[:2] == ["select-workspace", "--workspace"] and "workspace:1" in call for call in calls)
+
+
+def test_auto_pr_handoff_creates_pr_from_already_committed_branch(config, fake_git_repo, fake_cmux, tmp_path):
+    remote = tmp_path / "remote.git"
+    git(["init", "--bare", str(remote)], tmp_path)
+    git(["remote", "add", "origin", str(remote)], fake_git_repo)
+    git(["push", "-u", "origin", "main"], fake_git_repo)
+    gh = fake_cmux.parent / "bin" / "gh"
+    gh.write_text("#!/bin/sh\nprintf '%s\n' 'https://github.test/demo/pull/2'\n", encoding="utf-8")
+    gh.chmod(0o755)
+
+    init_command(config, open_obsidian=False)
+    write_registry(config, fake_git_repo)
+    created = new_task_command(
+        config,
+        repo="demo",
+        title="Open PR from pushed branch",
+        status="ready",
+        test_command="python -c 'print(\"ok\")'",
+    )
+    start_task(config, created["id"])
+    task = read_task_note(config, created["id"])
+    Path(task.frontmatter.worktree, "change.txt").write_text("changed\n", encoding="utf-8")
+    git(["add", "change.txt"], task.frontmatter.worktree)
+    git(["commit", "-m", "Manual agent commit"], task.frontmatter.worktree)
+    git(["push", "-u", "origin", task.frontmatter.branch], task.frontmatter.worktree)
+    mark_task(config, created["id"], "review-diff")
+
+    url = pr_command(config, created["id"], auto=True)
+
+    task = read_task_note(config, created["id"])
+    assert url == "https://github.test/demo/pull/2"
+    assert task.frontmatter.status == "pr-opened"
+    assert task.frontmatter.pr_url == url
 
 
 def test_auto_pr_handoff_stops_when_tests_fail(config, fake_git_repo, fake_cmux, tmp_path):
