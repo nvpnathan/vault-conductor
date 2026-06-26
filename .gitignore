@@ -52,6 +52,9 @@ coverage.xml
 .pytest_cache/
 cover/
 
+# cmux artifact fallback
+cmux-assets/
+
 # Translations
 *.mo
 *.pot

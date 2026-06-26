@@ -1,6 +1,7 @@
 from vault_conductor import cmux
 from vault_conductor.cmux import (
     CmuxAdapter,
+    CmuxCapabilities,
     CmuxHITLPolicy,
     CmuxRuntimeState,
     CmuxTarget,
@@ -46,6 +47,19 @@ def test_adapter_discovers_capabilities_and_current_target(fake_cmux):
         surface_id="surface-id-1",
         socket_path="/tmp/cmux-test.sock",
     )
+
+
+def test_capabilities_parse_live_methods_shape():
+    capabilities = CmuxCapabilities.from_json(
+        {
+            "protocol": "cmux-socket",
+            "methods": ["system.identify", "workspace.create", "browser.snapshot"],
+        }
+    )
+
+    assert capabilities.supports("system.identify")
+    assert capabilities.supports("workspace.create")
+    assert capabilities.supports("browser.snapshot")
 
 
 def test_hitl_policy_defaults_to_non_disruptive_focus():

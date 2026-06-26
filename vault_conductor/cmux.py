@@ -92,7 +92,7 @@ class CmuxCapabilities:
     @classmethod
     def from_json(cls, data: Mapping[str, Any] | None) -> CmuxCapabilities:
         raw = dict(data or {})
-        command_values = raw.get("commands") or raw.get("capabilities") or []
+        command_values = raw.get("commands") or raw.get("methods") or raw.get("capabilities") or []
         if isinstance(command_values, Mapping):
             commands = frozenset(str(key) for key in command_values.keys())
         else:
