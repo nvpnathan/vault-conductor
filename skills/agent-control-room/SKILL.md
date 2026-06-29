@@ -46,10 +46,13 @@ Use this when the vault or CLI needs setup:
 ```bash
 uv sync --dev
 conductor init --vault "$HOME/Agent Control Room" --repos "$HOME/repos" --no-open
+conductor install-skill
 conductor doctor --fix
 ```
 
 The canonical executable is `conductor`. Use `uv run conductor ...` only as a development fallback when the installed CLI is unavailable.
+
+If `conductor doctor` reports the installed `agent-control-room` skill is stale or missing, run `conductor install-skill`, then restart Codex so the updated skill is discovered.
 
 ## Agent Provider Names
 
@@ -138,6 +141,7 @@ Use status transitions deliberately:
 
 ```bash
 conductor mark AGT-0001 needs-human --question "<one specific question?>"
+conductor send AGT-0001 "<answer>" --status running
 conductor send AGT-0001 "Specific follow-up instruction"
 conductor mark AGT-0001 needs-revision
 conductor mark AGT-0001 ready
@@ -149,6 +153,8 @@ conductor mark AGT-0001 done --human
 
 If you cannot run `conductor mark ... --question`, print `AGENT_QUESTION: <one specific question?>` followed by `AGENT_STATUS: needs-human` in the transcript so `conductor watch` can open a Human Gate.
 
+When answering an open Human Gate, use `conductor send <TASK_ID> "<answer>" --status running` only when the answer should resume the agent. If the CLI says `saved but not sent to cmux`, do not assume the agent saw the answer; the Human Gate remains open and the cmux session needs repair or direct inspection.
+
 Use `conductor pr <TASK_ID> --auto` only after implementation is ready for review. It creates the PR when gates pass and opens it in the task's cmux workspace. Only the human may mark `done`; never do this automatically after tests or PR creation.
 
 When the human asks you to commit, push, hand off, or open a PR for a task that is already in review, run `conductor pr <TASK_ID> --auto`. Do not stop after a raw `git commit` or `git push`; PR handoff is what moves the task to `pr-opened`.
@@ -159,9 +165,12 @@ If task notes and board cards drift because a human edited Markdown or dragged c
 
 ```bash
 conductor sync
+conductor repair-sessions
 ```
 
 Task frontmatter is the default source of truth. Use `conductor sync --board-wins` only when the human explicitly wants board placement to override task note status.
+
+Use `conductor repair-sessions` or `conductor doctor --fix` when doctor reports stale cmux workspaces or surfaces. Repairs for still-running work move the task to `needs-human` with an explicit recovery question; safe closed sessions are removed from `sessions.json`.
 
 ## Safety Rules
 

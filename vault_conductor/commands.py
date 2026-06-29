@@ -105,7 +105,11 @@ DASHBOARD_NOTES = {
 SKILL_NAME = "agent-control-room"
 REQUIRED_SKILL_TEXT = (
     'conductor mark AGT-0001 needs-human --question "<one specific question?>"',
+    'conductor send AGT-0001 "<answer>" --status running',
+    "saved but not sent to cmux",
     "AGENT_QUESTION: <one specific question?>",
+    "conductor install-skill",
+    "conductor repair-sessions",
     "conductor pr AGT-0001 --auto",
 )
 

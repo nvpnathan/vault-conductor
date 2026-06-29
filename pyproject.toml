@@ -24,3 +24,4 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["vault_conductor"]
+force-include = { "skills/agent-control-room" = "skills/agent-control-room" }

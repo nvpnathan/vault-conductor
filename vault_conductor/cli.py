@@ -228,7 +228,7 @@ def dispatch(config, args):
             return {"id": args.task_id, "target": args.column_or_status}, f"Moved {args.task_id} to {args.column_or_status}"
         case "send":
             result = send_command(config, args.task_id, args.message, status=args.status, human_question=args.question)
-            return result, "Follow-up saved."
+            return result, send_human_message(result)
         case "activity":
             result = activity_command(config, args.task_id, args.activity, detail=args.detail)
             return result, f"Activity {result['activity']} recorded for {args.task_id}"
@@ -291,6 +291,16 @@ def dispatch(config, args):
             dashboard_main()
             return None, ""
     raise ValueError(f"Unknown command: {args.command}")
+
+
+def send_human_message(result: dict) -> str:
+    if result.get("deliveryFailed"):
+        if result.get("humanQuestion"):
+            return "Follow-up saved but not sent to cmux; human question remains open."
+        return "Follow-up saved but not sent to cmux."
+    if result.get("sent"):
+        return "Follow-up saved and sent to cmux."
+    return "Follow-up saved."
 
 
 def watch_main() -> int:

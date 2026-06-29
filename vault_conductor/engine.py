@@ -77,6 +77,7 @@ class SendTaskResult:
     saved: bool
     sent: bool
     message: str
+    delivery_failed: bool = False
     human_question: str | None = None
     handoff_artifact: str | None = None
 
@@ -84,6 +85,7 @@ class SendTaskResult:
         return {
             "saved": self.saved,
             "sent": self.sent,
+            "deliveryFailed": self.delivery_failed,
             "message": self.message,
             "humanQuestion": self.human_question,
             "handoffArtifact": self.handoff_artifact,
@@ -343,6 +345,7 @@ class ConductorEngine:
             task_id=task_id,
             saved=True,
             sent=sent,
+            delivery_failed=expected_live_delivery and not sent,
             message=message,
             human_question=updated.frontmatter.human_question if updated.frontmatter.human_question_status == "open" else None,
             handoff_artifact=updated.frontmatter.human_handoff_artifact,

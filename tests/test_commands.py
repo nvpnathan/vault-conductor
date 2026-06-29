@@ -19,6 +19,7 @@ from vault_conductor.commands import (
     status_command,
     sync_command,
 )
+from vault_conductor.cli import main as cli_main
 from vault_conductor.kanban import find_card, parse_board, render_board
 from vault_conductor.sessions import read_sessions, write_sessions
 from vault_conductor.tasks import read_task_note
@@ -306,6 +307,39 @@ def test_send_appends_notes_and_forwards_to_live_cmux_session(config, fake_git_r
         call[:5] == ["send-key", "--workspace", "workspace:1", "--surface", "surface:1"] and "enter" in call
         for call in calls
     )
+
+
+def test_cli_send_reports_when_live_cmux_delivery_fails(config, fake_git_repo, fake_cmux, monkeypatch, capsys):
+    init_command(config, open_obsidian=False)
+    write_registry(config, fake_git_repo)
+    created = new_task_command(config, repo="demo", title="CLI send failure", status="ready")
+    start_task(config, created["id"])
+    mark_task(config, created["id"], "needs-human", human_question="Should conductor keep the gate open?")
+    monkeypatch.setenv("FAKE_CMUX_FAIL_SEND", "1")
+
+    exit_code = cli_main(
+        [
+            "--vault",
+            str(config.vault_path),
+            "--repos",
+            str(config.repos_root),
+            "--runtime-root",
+            str(config.state_root.parent),
+            "send",
+            created["id"],
+            "Yes, keep it open.",
+            "--status",
+            "running",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    task = read_task_note(config, created["id"]).frontmatter
+    assert exit_code == 0
+    assert "saved but not sent" in output
+    assert "human question remains open" in output
+    assert task.status == "needs-human"
+    assert task.human_question_status == "open"
 
 
 def test_status_reports_human_question(config, fake_git_repo, fake_cmux):

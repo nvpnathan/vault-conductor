@@ -13,7 +13,11 @@ def test_repo_packages_conductor_skill_and_install_docs():
     assert "conductor activity" in text
     assert "conductor pr AGT-0001 --auto" in text
     assert 'conductor mark AGT-0001 needs-human --question "<one specific question?>"' in text
+    assert 'conductor send AGT-0001 "<answer>" --status running' in text
+    assert "saved but not sent to cmux" in text
     assert "AGENT_QUESTION: <one specific question?>" in text
+    assert "conductor install-skill" in text
+    assert "conductor repair-sessions" in text
     assert "cmux codex-teams" in text
     assert "Only the human may mark `done`" in text
     assert "uv run conductor" in text
@@ -26,3 +30,7 @@ def test_repo_packages_conductor_skill_and_install_docs():
     assert "skills/agent-control-room" in readme_text
     assert "conductor pr AGT-0001 --auto" in readme_text
     assert 'conductor mark AGT-0001 needs-human --question "<one specific question?>"' in readme_text
+
+    pyproject_text = (root / "pyproject.toml").read_text(encoding="utf-8")
+    assert "force-include" in pyproject_text
+    assert "skills/agent-control-room" in pyproject_text
