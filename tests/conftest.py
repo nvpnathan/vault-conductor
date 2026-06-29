@@ -261,7 +261,29 @@ elif cmd == "markdown":
     write_state(data)
     path = args[2] if len(args) > 2 else ""
     emit({"surface_ref": surface_ref, "pane_ref": pane_ref}, f"OK surface={surface_ref} pane={pane_ref} path={path}")
-elif cmd in {"send", "send-key", "close-workspace", "set-status", "set-progress", "clear-progress", "notify"}:
+elif cmd == "send":
+    if os.environ.get("FAKE_CMUX_FAIL_SEND") == "1":
+        emit({"ok": False}, "ERROR send failed")
+        sys.exit(1)
+    emit({"ok": True}, "OK")
+elif cmd == "send-key":
+    if os.environ.get("FAKE_CMUX_FAIL_SEND_KEY") == "1":
+        emit({"ok": False}, "ERROR send-key failed")
+        sys.exit(1)
+    emit({"ok": True}, "OK")
+elif cmd == "close-workspace":
+    if os.environ.get("FAKE_CMUX_FAIL_CLOSE") == "1":
+        emit({"ok": False}, "ERROR close failed")
+        sys.exit(1)
+    if "--workspace" not in args:
+        emit({"ok": False}, "ERROR missing --workspace")
+        sys.exit(1)
+    data = read_state()
+    workspace_ref = args[args.index("--workspace") + 1]
+    data["workspaces"] = [item for item in data["workspaces"] if item["ref"] != workspace_ref]
+    write_state(data)
+    emit({"ok": True}, "OK")
+elif cmd in {"set-status", "set-progress", "clear-progress", "notify"}:
     emit({"ok": True}, "OK")
 else:
     emit({"ok": True}, "OK")

@@ -250,7 +250,8 @@ class ConductorEngine:
         append_task_log(self.config, task_id, f"Agent started in `{workspace_ref}` with `{cmux_command}`.")
         instruction = (
             f"Please read the prompt file at {prompt_path} and follow it. "
-            "Update the task status to review-diff, needs-human, or failed; if you cannot edit the note, print AGENT_STATUS."
+            "Update the task status to review-diff, needs-human, or failed; if you cannot edit the note and need "
+            "human input, print AGENT_QUESTION followed by AGENT_STATUS."
         )
         if "codex" in cmux_command.lower() and not cmux.wait_for_screen_text(workspace_ref, surface_ref, "OpenAI Codex"):
             append_task_log(self.config, task_id, "Timed out waiting for Codex; sending prompt instruction anyway.")
@@ -270,7 +271,11 @@ class ConductorEngine:
             raise ValueError(f"No live session found for {task_id}")
         workspace_ref = session.get("workspace_ref")
         if workspace_ref:
-            cmux.close_workspace(workspace_ref)
+            close_result = cmux.close_workspace(workspace_ref)
+            if not close_result.ok:
+                detail = close_result.stderr or close_result.stdout or "unknown cmux error"
+                append_task_log(self.config, task_id, f"cmux close-workspace failed for `{workspace_ref}`: {detail}")
+                raise RuntimeError(f"cmux close-workspace failed for {workspace_ref}: {detail}")
         status = "parked" if park else "failed"
         run_id = session.get("run_id")
         if run_id:
@@ -303,6 +308,7 @@ class ConductorEngine:
         append_task_log(self.config, task_id, f"Human instruction: {message}")
         session = read_sessions(self.config).get("sessions", {}).get(task_id)
         sent = False
+        expected_live_delivery = bool(session and session.get("workspace_ref"))
         if session and session.get("workspace_ref"):
             send_result = cmux.send(session["workspace_ref"], message, surface_ref=session.get("surface_ref"))
             enter_result = cmux.send_enter(session["workspace_ref"], surface_ref=session.get("surface_ref"))
@@ -313,7 +319,19 @@ class ConductorEngine:
                     task_id,
                     f"Human instruction could not be sent to cmux workspace {session.get('workspace_ref')}; saved only.",
                 )
-        if status:
+        if (
+            status
+            and expected_live_delivery
+            and not sent
+            and status != "needs-human"
+            and task.frontmatter.human_question_status == "open"
+        ):
+            append_task_log(
+                self.config,
+                task_id,
+                f"Status `{status}` not applied because cmux delivery failed; human question remains open.",
+            )
+        elif status:
             self.set_task_status(
                 task_id,
                 status,
@@ -478,10 +496,14 @@ class ConductorEngine:
                 f"conductor log {task_id} --tail 100",
             ],
         }
-        return cmux.capture_review_artifact(
+        capture = cmux.capture_review_artifact_with_layout(
             artifact_path,
             title=f"{task_id} needs human input",
             evidence=evidence,
             layout=layout_for_open,
             policy=cmux.CmuxHITLPolicy.non_disruptive(),
         )
+        if session and capture.layout:
+            session.update(capture.layout.to_session_patch())
+            upsert_session(self.config, task_id, session)
+        return capture.path

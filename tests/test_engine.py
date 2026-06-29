@@ -112,10 +112,32 @@ def test_engine_stops_task_and_clears_live_session(config, fake_git_repo, fake_c
     assert run.frontmatter.ended is not None
     assert run.frontmatter.exit_code == -15
     assert read_sessions(config)["sessions"] == {}
-    assert any(call[:2] == ["close-workspace", start_result.workspace_ref] for call in calls)
+    assert any(call == ["close-workspace", "--workspace", start_result.workspace_ref] for call in calls)
 
     with pytest.raises(ValueError, match="No live session"):
         engine.stop_task(created["id"])
+
+
+def test_engine_stop_preserves_session_when_cmux_close_fails(config, fake_git_repo, fake_cmux, monkeypatch):
+    init_command(config, open_obsidian=False)
+    write_registry(config, fake_git_repo)
+    created = new_task_command(config, repo="demo", title="Engine stop failure", status="ready")
+
+    engine = ConductorEngine(config)
+    start_result = engine.start_task(created["id"])
+    monkeypatch.setenv("FAKE_CMUX_FAIL_CLOSE", "1")
+
+    with pytest.raises(RuntimeError, match="cmux close-workspace failed"):
+        engine.stop_task(created["id"], park=True)
+
+    task = read_task_note(config, created["id"])
+    run = read_run_note(config, start_result.run_id)
+    session = read_sessions(config)["sessions"][created["id"]]
+    assert task.frontmatter.status == "running"
+    assert task.frontmatter.workspace_ref == start_result.workspace_ref
+    assert run.frontmatter.status == "running"
+    assert session["workspace_ref"] == start_result.workspace_ref
+    assert "cmux close-workspace failed" in task.body
 
 
 def test_engine_sends_followup_to_live_task(config, fake_git_repo, fake_cmux):
@@ -161,6 +183,27 @@ def test_engine_sends_followup_to_live_task(config, fake_git_repo, fake_cmux):
     )
 
 
+def test_engine_persists_needs_human_artifact_surface_layout(config, fake_git_repo, fake_cmux):
+    init_command(config, open_obsidian=False)
+    write_registry(config, fake_git_repo)
+    created = new_task_command(config, repo="demo", title="Persist HITL layout", status="ready")
+    engine = ConductorEngine(config)
+    engine.start_task(created["id"])
+
+    engine.set_task_status(
+        created["id"],
+        "needs-human",
+        actor="conductor",
+        source="unit-test",
+        human_question="Which contract should the adapter preserve?",
+    )
+
+    session = read_sessions(config)["sessions"][created["id"]]
+    layout = session["cmux_layout"]
+    assert layout["surfaces"]["artifact"].startswith("surface:")
+    assert layout["panes"]["helper"].startswith("pane:")
+
+
 def test_engine_requires_question_for_needs_human(config, fake_git_repo, fake_cmux):
     init_command(config, open_obsidian=False)
     write_registry(config, fake_git_repo)
@@ -197,6 +240,36 @@ def test_engine_send_resumes_from_needs_human_and_clears_question(config, fake_g
     assert "# Human question\n\nNone." in task.abs_path.read_text(encoding="utf-8")
     assert session["status"] == "running"
     assert session.get("human_question") is None
+
+
+def test_engine_does_not_clear_human_question_when_resume_send_fails(config, fake_git_repo, fake_cmux, monkeypatch):
+    init_command(config, open_obsidian=False)
+    write_registry(config, fake_git_repo)
+    created = new_task_command(config, repo="demo", title="Resume HITL send failure", status="ready")
+    engine = ConductorEngine(config)
+    engine.start_task(created["id"])
+    engine.set_task_status(
+        created["id"],
+        "needs-human",
+        actor="conductor",
+        source="unit-test",
+        human_question="Should I update the generated fixture?",
+    )
+
+    monkeypatch.setenv("FAKE_CMUX_FAIL_SEND", "1")
+    result = engine.send_to_task(created["id"], "Yes, update the generated fixture.", status="running")
+
+    task = read_task_note(config, created["id"])
+    session = read_sessions(config)["sessions"][created["id"]]
+    assert result.saved is True
+    assert result.sent is False
+    assert result.human_question == "Should I update the generated fixture?"
+    assert task.frontmatter.status == "needs-human"
+    assert task.frontmatter.human_question_status == "open"
+    assert task.frontmatter.human_question_answer is None
+    assert "Human instruction could not be sent to cmux workspace" in task.body
+    assert session["status"] == "needs-human"
+    assert session["human_question"] == "Should I update the generated fixture?"
 
 
 def test_engine_saves_followup_without_live_session(config, fake_git_repo, fake_cmux):

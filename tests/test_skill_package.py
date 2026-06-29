@@ -12,6 +12,8 @@ def test_repo_packages_conductor_skill_and_install_docs():
     assert "name: agent-control-room" in text
     assert "conductor activity" in text
     assert "conductor pr AGT-0001 --auto" in text
+    assert 'conductor mark AGT-0001 needs-human --question "<one specific question?>"' in text
+    assert "AGENT_QUESTION: <one specific question?>" in text
     assert "cmux codex-teams" in text
     assert "Only the human may mark `done`" in text
     assert "uv run conductor" in text
@@ -22,3 +24,4 @@ def test_repo_packages_conductor_skill_and_install_docs():
     assert "setup.sh` installs the Codex skill copy automatically" in readme_text
     assert "skills/agent-control-room" in readme_text
     assert "conductor pr AGT-0001 --auto" in readme_text
+    assert 'conductor mark AGT-0001 needs-human --question "<one specific question?>"' in readme_text

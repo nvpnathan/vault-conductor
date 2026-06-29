@@ -262,6 +262,12 @@ class CmuxSession:
 
 
 @dataclass(frozen=True)
+class CmuxArtifactCapture:
+    path: Path
+    layout: CmuxWorkspaceLayout | None = None
+
+
+@dataclass(frozen=True)
 class CmuxRuntimeState:
     sessions: dict[str, CmuxSession] = field(default_factory=dict)
 
@@ -577,8 +583,8 @@ class CmuxAdapter:
         args.append("enter")
         return self.run(*args)
 
-    def close_workspace(self, workspace_ref: str) -> None:
-        self.run("close-workspace", workspace_ref)
+    def close_workspace(self, workspace_ref: str) -> CmuxCommandResult:
+        return self.run("close-workspace", "--workspace", workspace_ref)
 
     def list_workspaces(self) -> list[dict[str, Any]]:
         data = self.json("list-workspaces")
@@ -730,14 +736,37 @@ class CmuxAdapter:
         layout: CmuxWorkspaceLayout | None = None,
         policy: CmuxHITLPolicy | None = None,
     ) -> Path:
+        return self.capture_review_artifact_with_layout(
+            artifact_path,
+            title=title,
+            evidence=evidence,
+            layout=layout,
+            policy=policy,
+        ).path
+
+    def capture_review_artifact_with_layout(
+        self,
+        artifact_path: str | Path,
+        *,
+        title: str,
+        evidence: Mapping[str, Any],
+        layout: CmuxWorkspaceLayout | None = None,
+        policy: CmuxHITLPolicy | None = None,
+    ) -> CmuxArtifactCapture:
         path = Path(artifact_path)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(_render_artifact_html(title=title, evidence=evidence), encoding="utf-8")
+        opened_layout = layout
         if layout and layout.workspace_ref:
             focus_policy = policy or CmuxHITLPolicy.non_disruptive()
             if focus_policy.open_browser:
-                self.open_browser_in_helper(layout, path.resolve().as_uri(), policy=focus_policy, role="artifact")
-        return path
+                opened_layout = self.open_browser_in_helper(
+                    layout,
+                    path.resolve().as_uri(),
+                    policy=focus_policy,
+                    role="artifact",
+                )
+        return CmuxArtifactCapture(path=path, layout=opened_layout)
 
 
 _default_adapter = CmuxAdapter()
@@ -886,8 +915,8 @@ def send_enter(workspace_ref: str, *, surface_ref: str | None = None) -> CmuxCom
     return _default_adapter.send_enter(workspace_ref, surface_ref=surface_ref)
 
 
-def close_workspace(workspace_ref: str) -> None:
-    _default_adapter.close_workspace(workspace_ref)
+def close_workspace(workspace_ref: str) -> CmuxCommandResult:
+    return _default_adapter.close_workspace(workspace_ref)
 
 
 def list_workspaces() -> list[dict[str, Any]]:
@@ -977,6 +1006,23 @@ def capture_review_artifact(
     policy: CmuxHITLPolicy | None = None,
 ) -> Path:
     return _default_adapter.capture_review_artifact(
+        artifact_path,
+        title=title,
+        evidence=evidence,
+        layout=layout,
+        policy=policy,
+    )
+
+
+def capture_review_artifact_with_layout(
+    artifact_path: str | Path,
+    *,
+    title: str,
+    evidence: Mapping[str, Any],
+    layout: CmuxWorkspaceLayout | None = None,
+    policy: CmuxHITLPolicy | None = None,
+) -> CmuxArtifactCapture:
+    return _default_adapter.capture_review_artifact_with_layout(
         artifact_path,
         title=title,
         evidence=evidence,

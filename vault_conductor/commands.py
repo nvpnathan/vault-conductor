@@ -49,6 +49,7 @@ from .tasks import (
     status_from_column,
     status_to_column,
     update_task_frontmatter,
+    validate_human_question,
 )
 
 
@@ -60,6 +61,7 @@ DASHBOARD_NOTES = {
             "conductor status",
             "conductor log <TASK_ID> --tail 100",
             'conductor send <TASK_ID> "Answer or instruction" --status running',
+            'conductor mark <TASK_ID> needs-human --question "<one specific question?>"',
             "conductor mark <TASK_ID> needs-revision",
         ],
     },
@@ -82,7 +84,7 @@ DASHBOARD_NOTES = {
             "conductor log <TASK_ID> --tail 100",
             'conductor send <TASK_ID> "Follow-up instruction"',
             "conductor mark <TASK_ID> review-diff",
-            "conductor mark <TASK_ID> needs-human",
+            'conductor mark <TASK_ID> needs-human --question "<one specific question?>"',
         ],
     },
     "Failed and Parked.md": {
@@ -885,13 +887,19 @@ def inspect_cmux_runtime(config: Config) -> dict[str, Any]:
         checks.append({"name": "cmux-session-refs", "status": "WARN", "message": str(error)})
     session_details = []
     for session in runtime.sessions.values():
-        workspace_exists = (
+        workspace_listed = (
             session.workspace_ref in live_workspace_refs
             if live_workspace_refs is not None and session.workspace_ref
             else None
         )
+        workspace_exists = workspace_listed
+        if workspace_exists is False and session.workspace_ref:
+            try:
+                workspace_exists = adapter.workspace_exists(session.workspace_ref)
+            except Exception:
+                workspace_exists = False
         surface_exists = None
-        if workspace_exists and session.surface_ref:
+        if workspace_listed and session.surface_ref:
             try:
                 surface_exists = adapter.surface_exists(session.workspace_ref, session.surface_ref)
             except Exception:
@@ -1006,7 +1014,7 @@ def sample_session_transcript(config: Config, task_id: str, session: dict[str, A
     if detected:
         question = None
         if detected == "needs-human":
-            question = detect_agent_question(text) or f"What input does {task_id} need before it can continue?"
+            question = agent_question_from_transcript(text, task_id)
         mark_task(config, task_id, detected, human_question=question)
         if session.get("run_id"):
             patch = {"status": detected}
@@ -1015,3 +1023,16 @@ def sample_session_transcript(config: Config, task_id: str, session: dict[str, A
             update_run_frontmatter(config, session["run_id"], patch)
         append_task_log(config, task_id, f"Detected AGENT_STATUS: {detected}.")
     return detected
+
+
+def agent_question_from_transcript(text: str, task_id: str) -> str:
+    candidate = detect_agent_question(text)
+    if candidate:
+        normalized = " ".join(candidate.strip().split())
+        if "?" not in normalized:
+            normalized = normalized.rstrip(".!") + "?"
+        try:
+            return validate_human_question(normalized)
+        except ValueError:
+            pass
+    return f"What input does {task_id} need before it can continue?"

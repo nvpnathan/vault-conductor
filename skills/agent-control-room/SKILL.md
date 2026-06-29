@@ -137,7 +137,7 @@ Use `waiting` for non-human waits such as command output. Use `blocked` only whe
 Use status transitions deliberately:
 
 ```bash
-conductor mark AGT-0001 needs-human
+conductor mark AGT-0001 needs-human --question "<one specific question?>"
 conductor send AGT-0001 "Specific follow-up instruction"
 conductor mark AGT-0001 needs-revision
 conductor mark AGT-0001 ready
@@ -146,6 +146,8 @@ conductor test AGT-0001
 conductor pr AGT-0001 --auto
 conductor mark AGT-0001 done --human
 ```
+
+If you cannot run `conductor mark ... --question`, print `AGENT_QUESTION: <one specific question?>` followed by `AGENT_STATUS: needs-human` in the transcript so `conductor watch` can open a Human Gate.
 
 Use `conductor pr <TASK_ID> --auto` only after implementation is ready for review. It creates the PR when gates pass and opens it in the task's cmux workspace. Only the human may mark `done`; never do this automatically after tests or PR creation.
 

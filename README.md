@@ -71,6 +71,7 @@ conductor new --repo my-repo --title "Implement feature" --status ready
 conductor status
 conductor start AGT-0001
 conductor send AGT-0001 "Please add a regression test"
+conductor mark AGT-0001 needs-human --question "<one specific question?>"
 conductor activity AGT-0001 testing --detail "Running pytest"
 conductor log AGT-0001 --tail 100
 conductor diff AGT-0001 --stat --save

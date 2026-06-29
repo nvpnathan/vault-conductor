@@ -48,6 +48,28 @@ def test_watch_detects_agent_activity_fallback(config, fake_git_repo, fake_cmux,
     )
 
 
+def test_watch_normalizes_agent_question_fallback_before_opening_human_gate(
+    config, fake_git_repo, fake_cmux, monkeypatch
+):
+    init_command(config, open_obsidian=False)
+    write_registry(config, fake_git_repo)
+    created = new_task_command(config, repo="demo", title="Watch question", status="ready")
+
+    move_card_only_on_board(config, created["id"], "Running")
+    watch_once(config)
+
+    monkeypatch.setenv(
+        "FAKE_CMUX_SCREEN",
+        "Blocked on product choice\nAGENT_QUESTION: Should conductor reuse the existing cmux surface\nAGENT_STATUS: needs-human\n",
+    )
+    watch_once(config)
+
+    task = read_task_note(config, created["id"]).frontmatter
+    assert task.status == "needs-human"
+    assert task.human_question == "Should conductor reuse the existing cmux surface?"
+    assert task.human_question_status == "open"
+
+
 def test_watch_logs_activity_without_polling_noise_by_default(config, fake_git_repo, fake_cmux):
     init_command(config, open_obsidian=False)
     write_registry(config, fake_git_repo)

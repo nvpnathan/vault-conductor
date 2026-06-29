@@ -192,6 +192,8 @@ def test_init_repairs_legacy_agentctl_dashboard_notes(config):
         assert "conductor" in text
         assert "uv run conductor" not in text
     assert "needs-human" in (config.control_room_dir / "Needs Human.md").read_text(encoding="utf-8")
+    assert "--question" in (config.control_room_dir / "Needs Human.md").read_text(encoding="utf-8")
+    assert "--question" in (config.control_room_dir / "Running Agents.md").read_text(encoding="utf-8")
     assert "review-diff" in (config.control_room_dir / "Review Queue.md").read_text(encoding="utf-8")
     assert "running" in (config.control_room_dir / "Running Agents.md").read_text(encoding="utf-8")
     assert "failed or parked" in (config.control_room_dir / "Failed and Parked.md").read_text(encoding="utf-8")
@@ -220,6 +222,7 @@ def test_start_creates_cmux_session_run_prompt_and_sends_prompt_file_instruction
     assert (config.worktrees_root / "demo" / created["id"]).is_dir()
     prompt_text = (config.prompts_root / "AGT-0001-RUN-001.prompt.md").read_text(encoding="utf-8")
     assert prompt_text.startswith("# Agent Control Room Task")
+    assert "AGENT_QUESTION: <one specific question?>" in prompt_text
     assert "conductor pr AGT-0001 --auto" in prompt_text
     assert (config.runs_dir / "AGT-0001-RUN-001-activity.md").exists()
     assert "codex-teams" in " ".join(new_workspace_call)
@@ -253,6 +256,7 @@ def test_start_creates_cmux_session_run_prompt_and_sends_prompt_file_instruction
         ],
     ]
     assert "read the prompt file" in " ".join(send_call)
+    assert "AGENT_QUESTION" in " ".join(send_call)
     assert send_call[:5] == ["send", "--workspace", "workspace:1", "--surface", "surface:1"]
     assert str(config.prompts_root / "AGT-0001-RUN-001.prompt.md") in " ".join(send_call)
     assert sessions["sessions"][created["id"]]["workspace_ref"] == "workspace:1"
@@ -561,6 +565,34 @@ def test_doctor_reports_stale_cmux_session_refs(config, fake_cmux):
             "surface_exists": None,
         }
     ]
+
+
+def test_doctor_keeps_session_live_when_workspace_list_temporarily_misses_live_workspace(config, monkeypatch):
+    init_command(config, open_obsidian=False)
+    write_sessions(
+        config,
+        {
+            "version": 1,
+            "sessions": {
+                "AGT-9999": {
+                    "task_id": "AGT-9999",
+                    "run_id": "AGT-9999-RUN-001",
+                    "workspace_ref": "workspace:9",
+                    "surface_ref": "surface:10",
+                    "status": "running",
+                }
+            },
+        },
+    )
+    monkeypatch.setattr("vault_conductor.cmux.CmuxAdapter.list_workspaces", lambda self: [])
+    monkeypatch.setattr("vault_conductor.cmux.CmuxAdapter.workspace_exists", lambda self, workspace_ref: workspace_ref == "workspace:9")
+
+    result = doctor_command(config, fix=False)
+    checks = {check["name"]: check["status"] for check in result["checks"]}
+
+    assert checks["cmux-session-refs"] == "OK"
+    assert result["cmux"]["sessions"][0]["workspace_exists"] is True
+    assert result["cmux"]["sessions"][0]["surface_exists"] is None
 
 
 def test_repair_sessions_command_reports_repair_details(config, fake_git_repo, fake_cmux):
