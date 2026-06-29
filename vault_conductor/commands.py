@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -99,6 +100,66 @@ DASHBOARD_NOTES = {
         ],
     },
 }
+
+
+SKILL_NAME = "agent-control-room"
+REQUIRED_SKILL_TEXT = (
+    'conductor mark AGT-0001 needs-human --question "<one specific question?>"',
+    "AGENT_QUESTION: <one specific question?>",
+    "conductor pr AGT-0001 --auto",
+)
+
+
+def packaged_skill_dir() -> Path:
+    return Path(__file__).resolve().parents[1] / "skills" / SKILL_NAME
+
+
+def codex_skills_root(codex_home: str | Path | None = None) -> Path:
+    home = Path(codex_home).expanduser() if codex_home else Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
+    return home / "skills"
+
+
+def inspect_skill_installation(codex_home: str | Path | None = None) -> dict[str, Any]:
+    source = packaged_skill_dir()
+    destination = codex_skills_root(codex_home) / SKILL_NAME
+    source_skill = source / "SKILL.md"
+    installed_skill = destination / "SKILL.md"
+    detail = {
+        "name": SKILL_NAME,
+        "source": str(source),
+        "destination": str(destination),
+        "requiredText": list(REQUIRED_SKILL_TEXT),
+    }
+    if not source_skill.exists():
+        return {**detail, "status": "source-missing", "message": f"Packaged skill is missing: {source_skill}"}
+    if not installed_skill.exists():
+        return {**detail, "status": "missing", "message": f"Skill is not installed at {destination}"}
+    source_text = source_skill.read_text(encoding="utf-8")
+    installed_text = installed_skill.read_text(encoding="utf-8")
+    missing_required = [item for item in REQUIRED_SKILL_TEXT if item not in installed_text]
+    if source_text != installed_text or missing_required:
+        message = f"Installed skill is stale: {destination}"
+        if missing_required:
+            message += f"; missing required text: {', '.join(missing_required)}"
+        return {**detail, "status": "stale", "message": message}
+    return {**detail, "status": "installed", "message": f"Skill installed at {destination}"}
+
+
+def install_skill_command(*, codex_home: str | Path | None = None) -> dict[str, Any]:
+    source = packaged_skill_dir()
+    if not (source / "SKILL.md").exists():
+        raise FileNotFoundError(f"Packaged skill is missing: {source / 'SKILL.md'}")
+    destination = codex_skills_root(codex_home) / SKILL_NAME
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists():
+        shutil.rmtree(destination)
+    shutil.copytree(source, destination)
+    return {
+        "name": SKILL_NAME,
+        "status": "installed",
+        "source": str(source),
+        "destination": str(destination),
+    }
 
 
 def dashboard_note_content(name: str, note: dict[str, Any]) -> str:
@@ -784,6 +845,18 @@ def doctor_command(config: Config, *, fix: bool = False) -> dict[str, Any]:
                 "message": "conductor package does not appear to be an editable install",
             }
         )
+    skill_details = inspect_skill_installation()
+    checks.append(
+        {
+            "name": "agent-control-room-skill",
+            "status": "OK" if skill_details["status"] == "installed" else "WARN",
+            "message": (
+                skill_details["message"]
+                if skill_details["status"] == "installed"
+                else f"{skill_details['message']}. Run conductor install-skill to sync it."
+            ),
+        }
+    )
     cmux_details = inspect_cmux_runtime(config)
     checks.extend(cmux_details.pop("checks"))
     if repair_result is not None:
@@ -808,6 +881,7 @@ def doctor_command(config: Config, *, fix: bool = False) -> dict[str, Any]:
     return {
         "checks": checks,
         "cli": provenance,
+        "skill": skill_details,
         "cmux": cmux_details,
         "paths": {
             "vaultPath": str(config.vault_path),

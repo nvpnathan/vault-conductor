@@ -46,11 +46,15 @@ fi
 
 echo
 echo "Installing Agent Control Room skill for Codex..."
-CODEX_SKILLS_DIR="${CODEX_HOME:-$HOME/.codex}/skills"
-mkdir -p "$CODEX_SKILLS_DIR"
-rm -rf "$CODEX_SKILLS_DIR/agent-control-room"
-cp -R "$REPO/skills/agent-control-room" "$CODEX_SKILLS_DIR/"
-echo "  ok skill installed at $CODEX_SKILLS_DIR/agent-control-room"
+if conductor install-skill >/dev/null 2>&1; then
+  echo "  ok skill installed with conductor install-skill"
+else
+  CODEX_SKILLS_DIR="${CODEX_HOME:-$HOME/.codex}/skills"
+  mkdir -p "$CODEX_SKILLS_DIR"
+  rm -rf "$CODEX_SKILLS_DIR/agent-control-room"
+  cp -R "$REPO/skills/agent-control-room" "$CODEX_SKILLS_DIR/"
+  echo "  ok skill installed at $CODEX_SKILLS_DIR/agent-control-room"
+fi
 
 echo
 if cmux ping >/dev/null 2>&1; then

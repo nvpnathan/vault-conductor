@@ -27,13 +27,11 @@ Custom providers can be configured in `90 System/control-room.config.yml`.
 
 ## Agent Control Room Skill
 
-This repo includes an agent-neutral Skill Recipe for conductor-managed vaults. `bash setup.sh` installs the Codex skill copy automatically. To reinstall it manually:
+This repo includes an agent-neutral Skill Recipe for conductor-managed vaults at `skills/agent-control-room`. `bash setup.sh` installs the Codex skill copy automatically. To reinstall it manually:
 
 ```bash
 cd vault-conductor
-mkdir -p "${CODEX_HOME:-$HOME/.codex}/skills"
-rm -rf "${CODEX_HOME:-$HOME/.codex}/skills/agent-control-room"
-cp -R skills/agent-control-room "${CODEX_HOME:-$HOME/.codex}/skills/"
+conductor install-skill
 ```
 
 Restart Codex after installing the skill so it is discovered in future sessions.

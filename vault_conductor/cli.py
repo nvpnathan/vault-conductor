@@ -11,6 +11,7 @@ from .commands import (
     diff_command,
     doctor_command,
     init_command,
+    install_skill_command,
     log_command,
     mark_task,
     move_command,
@@ -134,6 +135,7 @@ def build_parser() -> argparse.ArgumentParser:
     doctor = sub.add_parser("doctor")
     doctor.add_argument("--fix", action="store_true")
     doctor.add_argument("--json", dest="command_json", action="store_true")
+    sub.add_parser("install-skill")
     sub.add_parser("repair-sessions")
     sub.add_parser("dashboard")
     return parser
@@ -266,6 +268,9 @@ def dispatch(config, args):
             lines = ["Agent Control Room Doctor", ""]
             lines.extend(f"{check['status'].ljust(4)} {check['message']}" for check in result["checks"])
             return "\n".join(lines), "\n".join(lines)
+        case "install-skill":
+            result = install_skill_command()
+            return result, f"Installed {result['name']} skill at {result['destination']}"
         case "repair-sessions":
             result = repair_sessions_command(config)
             if config.flags.get("json"):

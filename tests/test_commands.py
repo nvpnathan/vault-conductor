@@ -9,6 +9,7 @@ from vault_conductor.commands import (
     activity_command,
     doctor_command,
     init_command,
+    install_skill_command,
     mark_task,
     new_task_command,
     pr_command,
@@ -522,6 +523,8 @@ def test_doctor_json_reports_cmux_and_runtime_dirs(config, fake_cmux):
     assert checks["cmux-capabilities"] == "OK"
     assert checks["cmux-identify"] == "OK"
     assert "conductor-cli" in checks
+    assert checks["agent-control-room-skill"] == "WARN"
+    assert result["skill"]["status"] == "missing"
     assert "packageVersion" in result["cli"]
     assert "modulePath" in result["cli"]
     assert "new-workspace" in result["cmux"]["capabilities"]["commands"]
@@ -529,6 +532,29 @@ def test_doctor_json_reports_cmux_and_runtime_dirs(config, fake_cmux):
     assert result["cmux"]["socketPath"] == "/tmp/fake-cmux.sock"
     assert result["paths"]["stateRoot"] == str(config.state_root)
     json.dumps(result)
+
+
+def test_install_skill_command_syncs_packaged_skill_and_doctor_reports_ok(config, fake_cmux):
+    init_command(config, open_obsidian=False)
+    stale_skill = Path.home() / ".codex" / "skills" / "agent-control-room" / "SKILL.md"
+    stale_skill.parent.mkdir(parents=True)
+    stale_skill.write_text("old skill\n", encoding="utf-8")
+
+    before = doctor_command(config, fix=False)
+    before_checks = {check["name"]: check["status"] for check in before["checks"]}
+    assert before_checks["agent-control-room-skill"] == "WARN"
+    assert before["skill"]["status"] == "stale"
+
+    result = install_skill_command()
+    after = doctor_command(config, fix=False)
+    after_checks = {check["name"]: check["status"] for check in after["checks"]}
+
+    assert result["status"] == "installed"
+    assert result["name"] == "agent-control-room"
+    assert Path(result["destination"]).joinpath("SKILL.md").exists()
+    assert after_checks["agent-control-room-skill"] == "OK"
+    assert after["skill"]["status"] == "installed"
+    assert "AGENT_QUESTION: <one specific question?>" in stale_skill.read_text(encoding="utf-8")
 
 
 def test_doctor_reports_stale_cmux_session_refs(config, fake_cmux):

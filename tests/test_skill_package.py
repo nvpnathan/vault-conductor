@@ -22,6 +22,7 @@ def test_repo_packages_conductor_skill_and_install_docs():
     readme_text = readme.read_text(encoding="utf-8")
     assert "Agent Control Room Skill" in readme_text
     assert "setup.sh` installs the Codex skill copy automatically" in readme_text
+    assert "conductor install-skill" in readme_text
     assert "skills/agent-control-room" in readme_text
     assert "conductor pr AGT-0001 --auto" in readme_text
     assert 'conductor mark AGT-0001 needs-human --question "<one specific question?>"' in readme_text
