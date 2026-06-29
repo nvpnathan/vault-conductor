@@ -95,7 +95,12 @@ def watch_once(config: Config, *, log: WatchLog | None = None, verbose: bool = F
                 log(f"start failed task={task.frontmatter.id} error={message}")
             update_task_frontmatter(config, task.frontmatter.id, {"last_error": message})
             append_task_log(config, task.frontmatter.id, f"Failed to start task: {message}")
-            mark_task(config, task.frontmatter.id, "needs-human")
+            mark_task(
+                config,
+                task.frontmatter.id,
+                "needs-human",
+                human_question=f"How should conductor recover from this start failure for {task.frontmatter.id}?",
+            )
 
     sessions = read_sessions(config).get("sessions", {})
     if log and sessions and verbose:
@@ -160,7 +165,12 @@ def repair_stale_sessions(config: Config, live_workspace_refs: Iterable[str] | N
         session_removed = reason == "workspace-missing" or action != "needs-human"
         task_status_after = task_status
         if action == "needs-human":
-            mark_task(config, task_id, "needs-human")
+            mark_task(
+                config,
+                task_id,
+                "needs-human",
+                human_question=_repair_question(reason=reason, workspace_ref=workspace_ref, surface_ref=surface_ref),
+            )
             task_status_after = "needs-human"
         _preserve_repair_evidence(
             config,
@@ -270,6 +280,12 @@ def _repair_log_message(*, reason: str, workspace_ref: str | None, surface_ref: 
     return f"workspace {workspace_ref} closed while task was still running; needs human reconciliation."
 
 
+def _repair_question(*, reason: str, workspace_ref: str | None, surface_ref: str | None) -> str:
+    if reason == "surface-missing":
+        return f"How should conductor continue after cmux surface {surface_ref} disappeared from workspace {workspace_ref}?"
+    return f"How should conductor reconcile the closed cmux workspace {workspace_ref}?"
+
+
 def _safe_update_run_frontmatter(config: Config, run_id: str, patch: dict[str, Any]) -> None:
     try:
         update_run_frontmatter(config, run_id, patch)
@@ -296,7 +312,12 @@ def handle_notification(config: Config, data: dict) -> str | None:
     if not task_id:
         return None
     if read_task_status(config, task_id) == "running":
-        mark_task(config, task_id, "needs-human")
+        mark_task(
+            config,
+            task_id,
+            "needs-human",
+            human_question=f"How should conductor handle this cmux notification for {task_id}?",
+        )
         append_task_log(config, task_id, f"cmux notification: {data.get('title', '')} {data.get('body', '')}".strip())
     return task_id
 

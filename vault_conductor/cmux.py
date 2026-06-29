@@ -563,19 +563,19 @@ class CmuxAdapter:
             time.sleep(interval)
         return False
 
-    def send(self, workspace_ref: str, message: str, *, surface_ref: str | None = None) -> None:
+    def send(self, workspace_ref: str, message: str, *, surface_ref: str | None = None) -> CmuxCommandResult:
         args = ["send", "--workspace", workspace_ref]
         if surface_ref:
             args.extend(["--surface", surface_ref])
         args.append(message)
-        self.run(*args)
+        return self.run(*args)
 
-    def send_enter(self, workspace_ref: str, *, surface_ref: str | None = None) -> None:
+    def send_enter(self, workspace_ref: str, *, surface_ref: str | None = None) -> CmuxCommandResult:
         args = ["send-key", "--workspace", workspace_ref]
         if surface_ref:
             args.extend(["--surface", surface_ref])
         args.append("enter")
-        self.run(*args)
+        return self.run(*args)
 
     def close_workspace(self, workspace_ref: str) -> None:
         self.run("close-workspace", workspace_ref)
@@ -878,12 +878,12 @@ def wait_for_screen_text(
     )
 
 
-def send(workspace_ref: str, message: str, *, surface_ref: str | None = None) -> None:
-    _default_adapter.send(workspace_ref, message, surface_ref=surface_ref)
+def send(workspace_ref: str, message: str, *, surface_ref: str | None = None) -> CmuxCommandResult:
+    return _default_adapter.send(workspace_ref, message, surface_ref=surface_ref)
 
 
-def send_enter(workspace_ref: str, *, surface_ref: str | None = None) -> None:
-    _default_adapter.send_enter(workspace_ref, surface_ref=surface_ref)
+def send_enter(workspace_ref: str, *, surface_ref: str | None = None) -> CmuxCommandResult:
+    return _default_adapter.send_enter(workspace_ref, surface_ref=surface_ref)
 
 
 def close_workspace(workspace_ref: str) -> None:

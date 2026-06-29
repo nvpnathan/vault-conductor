@@ -70,6 +70,12 @@ class Task:
     last_diff_stat: str | None = None
     current_activity: str | None = None
     current_activity_detail: str | None = None
+    human_question: str | None = None
+    human_question_status: str | None = None
+    human_question_created: str | None = None
+    human_question_answered: str | None = None
+    human_question_answer: str | None = None
+    human_handoff_artifact: str | None = None
     type: str = "agent-task"
 
     @classmethod
@@ -305,6 +311,103 @@ def update_task_frontmatter(config: Config, task_id: str, patch: dict[str, Any])
     if data.get("status") == "done" and not data.get("completed"):
         data["completed"] = now_iso()
     write_file_atomic(note.abs_path, stringify_markdown(data, note.body))
+
+
+def update_task_note(config: Config, task_id: str, patch: dict[str, Any], *, sections: dict[str, str] | None = None) -> None:
+    note = read_task_note(config, task_id)
+    data = note.frontmatter.to_mapping()
+    data.update(patch)
+    data["updated"] = patch.get("updated", now_iso())
+    if data.get("status") == "done" and not data.get("completed"):
+        data["completed"] = now_iso()
+    body = note.body
+    for heading, content in (sections or {}).items():
+        body = replace_body_section(body, heading, content)
+    write_file_atomic(note.abs_path, stringify_markdown(data, body))
+
+
+def validate_human_question(value: str | None) -> str:
+    question = " ".join((value or "").strip().split())
+    if not question:
+        raise ValueError("needs-human requires one human question.")
+    if question.count("?") != 1 or not question.endswith("?"):
+        raise ValueError("needs-human requires one human question ending in '?'.")
+    return question
+
+
+def human_question_from_body(body: str) -> str | None:
+    content = section_content(body, "Human question").strip()
+    if not content or content.lower() in {"none", "none.", "pending", "pending."}:
+        return None
+    lines = [line.strip().removeprefix("- ").strip() for line in content.splitlines() if line.strip()]
+    if not lines:
+        return None
+    candidate = " ".join(lines)
+    try:
+        return validate_human_question(candidate)
+    except ValueError:
+        return None
+
+
+def set_task_human_question(
+    config: Config,
+    task_id: str,
+    question: str,
+    *,
+    patch: dict[str, Any] | None = None,
+    opened_at: str | None = None,
+) -> None:
+    opened_at = opened_at or now_iso()
+    update_task_note(
+        config,
+        task_id,
+        {
+            **(patch or {}),
+            "human_question": question,
+            "human_question_status": "open",
+            "human_question_created": opened_at,
+            "human_question_answered": None,
+            "human_question_answer": None,
+        },
+        sections={"Human question": question},
+    )
+
+
+def clear_task_human_question(
+    config: Config,
+    task_id: str,
+    *,
+    answer: str | None = None,
+    patch: dict[str, Any] | None = None,
+    answered_at: str | None = None,
+) -> None:
+    answered_at = answered_at or now_iso()
+    update_task_note(
+        config,
+        task_id,
+        {
+            **(patch or {}),
+            "human_question_status": "answered",
+            "human_question_answered": answered_at,
+            "human_question_answer": answer,
+        },
+        sections={"Human question": "None."},
+    )
+
+
+def section_content(body: str, heading: str) -> str:
+    lines = body.replace("\r\n", "\n").split("\n")
+    heading_line = f"# {heading}"
+    try:
+        start = next(index for index, line in enumerate(lines) if line.strip() == heading_line)
+    except StopIteration:
+        return ""
+    end = len(lines)
+    for index in range(start + 1, len(lines)):
+        if lines[index].startswith("# "):
+            end = index
+            break
+    return "\n".join(lines[start + 1 : end]).strip()
 
 
 def append_task_log(config: Config, task_id: str, message: str) -> None:

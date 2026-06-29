@@ -77,16 +77,19 @@ def build_parser() -> argparse.ArgumentParser:
     mark.add_argument("task_id")
     mark.add_argument("status", choices=TASK_STATUSES)
     mark.add_argument("--human", action="store_true")
+    mark.add_argument("--question")
 
     move = sub.add_parser("move")
     move.add_argument("task_id")
     move.add_argument("column_or_status")
     move.add_argument("--human", action="store_true")
+    move.add_argument("--question")
 
     send = sub.add_parser("send")
     send.add_argument("task_id")
     send.add_argument("message")
     send.add_argument("--status", choices=TASK_STATUSES)
+    send.add_argument("--question")
 
     activity = sub.add_parser("activity")
     activity.add_argument("task_id")
@@ -201,7 +204,9 @@ def dispatch(config, args):
                 activity_text = f" activity={activity}" if activity else ""
                 if activity and detail:
                     activity_text += f" detail={detail}"
-                lines.append(f"{task['id']} {task['status']} {task['repo']} {task['title']}{activity_text}")
+                question = task.get("human_question")
+                question_text = f" question={question}" if question and task.get("human_question_status") == "open" else ""
+                lines.append(f"{task['id']} {task['status']} {task['repo']} {task['title']}{activity_text}{question_text}")
             for task_id, session in result["sessions"].items():
                 status = session.get("status") or "running"
                 label = "RUNNING" if status == "running" else "SESSION"
@@ -214,13 +219,13 @@ def dispatch(config, args):
             status = stop_task(config, args.task_id, park=args.park, kill=args.kill)
             return {"status": status}, f"Stopped {args.task_id}; status {status}"
         case "mark":
-            mark_task(config, args.task_id, args.status, human=args.human)
+            mark_task(config, args.task_id, args.status, human=args.human, human_question=args.question)
             return {"id": args.task_id, "status": args.status}, f"Marked {args.task_id} {args.status}"
         case "move":
-            move_command(config, args.task_id, args.column_or_status, human=args.human)
+            move_command(config, args.task_id, args.column_or_status, human=args.human, human_question=args.question)
             return {"id": args.task_id, "target": args.column_or_status}, f"Moved {args.task_id} to {args.column_or_status}"
         case "send":
-            result = send_command(config, args.task_id, args.message, status=args.status)
+            result = send_command(config, args.task_id, args.message, status=args.status, human_question=args.question)
             return result, "Follow-up saved."
         case "activity":
             result = activity_command(config, args.task_id, args.activity, detail=args.detail)

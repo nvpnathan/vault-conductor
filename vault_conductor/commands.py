@@ -11,7 +11,7 @@ from urllib.parse import unquote, urlparse
 
 from . import cmux
 from .activity import record_activity
-from .agents import detect_agent_activity, detect_agent_status
+from .agents import detect_agent_activity, detect_agent_question, detect_agent_status
 from .config import Config, config_to_yaml
 from .constants import BOARD_COLUMNS, TASK_STATUSES
 from .engine import ConductorEngine
@@ -260,13 +260,14 @@ def record_status_change(config: Config, task_id: str, before_status: str, after
     ConductorEngine(config).record_status_change(task_id, before_status, after_status, actor=actor, source=source)
 
 
-def mark_task(config: Config, task_id: str, status: str, *, human: bool = False) -> None:
+def mark_task(config: Config, task_id: str, status: str, *, human: bool = False, human_question: str | None = None) -> None:
     ConductorEngine(config).set_task_status(
         task_id,
         status,
         actor="human" if human else "conductor",
         source="mark",
         human=human,
+        human_question=human_question,
     )
 
 
@@ -274,13 +275,20 @@ def notify_status_change(config: Config, task_id: str, status: str, workspace_re
     ConductorEngine(config).notify_status_change(task_id, status, workspace_ref)
 
 
-def move_command(config: Config, task_id: str, column_or_status: str, *, human: bool = False) -> None:
+def move_command(
+    config: Config,
+    task_id: str,
+    column_or_status: str,
+    *,
+    human: bool = False,
+    human_question: str | None = None,
+) -> None:
     if column_or_status in TASK_STATUSES:
-        mark_task(config, task_id, column_or_status, human=human)
+        mark_task(config, task_id, column_or_status, human=human, human_question=human_question)
         return
     status = status_from_column(config, column_or_status)
     if status:
-        mark_task(config, task_id, status, human=human)
+        mark_task(config, task_id, status, human=human, human_question=human_question)
         return
     task = read_task_note(config, task_id)
     board = read_board(config)
@@ -300,8 +308,20 @@ def start_task(config: Config, task_id: str) -> dict[str, str]:
     return ConductorEngine(config).start_task(task_id).to_dict()
 
 
-def send_command(config: Config, task_id: str, message: str, *, status: str | None = None) -> dict[str, Any]:
-    return ConductorEngine(config).send_to_task(task_id, message, status=status).to_dict()
+def send_command(
+    config: Config,
+    task_id: str,
+    message: str,
+    *,
+    status: str | None = None,
+    human_question: str | None = None,
+) -> dict[str, Any]:
+    return ConductorEngine(config).send_to_task(
+        task_id,
+        message,
+        status=status,
+        human_question=human_question,
+    ).to_dict()
 
 
 def activity_command(config: Config, task_id: str, activity: str, *, detail: str = "") -> dict[str, Any]:
@@ -664,6 +684,9 @@ def status_command(config: Config) -> dict[str, Any]:
                 "workspace_ref": task.frontmatter.workspace_ref,
                 "current_activity": task.frontmatter.current_activity,
                 "current_activity_detail": task.frontmatter.current_activity_detail,
+                "human_question": task.frontmatter.human_question,
+                "human_question_status": task.frontmatter.human_question_status,
+                "human_handoff_artifact": task.frontmatter.human_handoff_artifact,
             }
             for task in read_all_task_notes(config)
         ],
@@ -981,8 +1004,14 @@ def sample_session_transcript(config: Config, task_id: str, session: dict[str, A
             pass
     detected = detect_agent_status(text)
     if detected:
-        mark_task(config, task_id, detected)
+        question = None
+        if detected == "needs-human":
+            question = detect_agent_question(text) or f"What input does {task_id} need before it can continue?"
+        mark_task(config, task_id, detected, human_question=question)
         if session.get("run_id"):
-            update_run_frontmatter(config, session["run_id"], {"status": detected, "ended": now_iso()})
+            patch = {"status": detected}
+            if detected != "needs-human":
+                patch["ended"] = now_iso()
+            update_run_frontmatter(config, session["run_id"], patch)
         append_task_log(config, task_id, f"Detected AGENT_STATUS: {detected}.")
     return detected

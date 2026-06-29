@@ -15,6 +15,7 @@ from vault_conductor.commands import (
     repair_sessions_command,
     send_command,
     start_task,
+    status_command,
     sync_command,
 )
 from vault_conductor.kanban import find_card, parse_board, render_board
@@ -268,15 +269,29 @@ def test_send_appends_notes_and_forwards_to_live_cmux_session(config, fake_git_r
     created = new_task_command(config, repo="demo", title="Needs followup", status="ready")
     start_task(config, created["id"])
 
-    send_command(config, created["id"], "Please add the regression test.", status="needs-human")
+    result = send_command(
+        config,
+        created["id"],
+        "Please add the regression test.",
+        status="needs-human",
+        human_question="Should the regression test cover the CLI path?",
+    )
 
     task_path = config.tasks_dir / "AGT-0001 Needs followup.md"
     run_path = config.runs_dir / "AGT-0001-RUN-001-codex.md"
     calls = cmux_calls(fake_cmux)
+    task = read_task_note(config, created["id"])
+    artifacts = list(Path(os.environ["VAULT_CONDUCTOR_ASSET_ROOT"]).rglob("*needs-human.html"))
 
     assert "Human instruction: Please add the regression test." in task_path.read_text(encoding="utf-8")
+    assert "Should the regression test cover the CLI path?" in task_path.read_text(encoding="utf-8")
     assert "Please add the regression test." in run_path.read_text(encoding="utf-8")
-    assert read_task_note(config, created["id"]).frontmatter.status == "needs-human"
+    assert task.frontmatter.status == "needs-human"
+    assert task.frontmatter.human_question == "Should the regression test cover the CLI path?"
+    assert result["humanQuestion"] == "Should the regression test cover the CLI path?"
+    assert result["handoffArtifact"]
+    assert len(artifacts) == 1
+    assert "Should the regression test cover the CLI path?" in artifacts[0].read_text(encoding="utf-8")
     assert any(
         call[:5] == ["send", "--workspace", "workspace:1", "--surface", "surface:1"]
         and "Please add the regression test." in " ".join(call)
@@ -286,6 +301,21 @@ def test_send_appends_notes_and_forwards_to_live_cmux_session(config, fake_git_r
         call[:5] == ["send-key", "--workspace", "workspace:1", "--surface", "surface:1"] and "enter" in call
         for call in calls
     )
+
+
+def test_status_reports_human_question(config, fake_git_repo, fake_cmux):
+    init_command(config, open_obsidian=False)
+    write_registry(config, fake_git_repo)
+    created = new_task_command(config, repo="demo", title="Question status", status="ready")
+    start_task(config, created["id"])
+
+    mark_task(config, created["id"], "needs-human", human_question="Which API shape should be preserved?")
+
+    result = status_command(config)
+    task = next(item for item in result["tasks"] if item["id"] == created["id"])
+    assert task["human_question"] == "Which API shape should be preserved?"
+    assert task["human_question_status"] == "open"
+    assert task["human_handoff_artifact"]
 
 
 def test_activity_updates_task_timeline_and_cmux_status(config, fake_git_repo, fake_cmux):

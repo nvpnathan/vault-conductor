@@ -125,7 +125,12 @@ def test_engine_sends_followup_to_live_task(config, fake_git_repo, fake_cmux):
 
     engine = ConductorEngine(config)
     start_result = engine.start_task(created["id"])
-    result = engine.send_to_task(created["id"], "Please add the focused regression test.", status="needs-human")
+    result = engine.send_to_task(
+        created["id"],
+        "Please add the focused regression test.",
+        status="needs-human",
+        human_question="Which regression path should be covered?",
+    )
 
     task = read_task_note(config, created["id"])
     calls = cmux_calls(fake_cmux)
@@ -137,9 +142,14 @@ def test_engine_sends_followup_to_live_task(config, fake_git_repo, fake_cmux):
     assert result.saved is True
     assert result.sent is True
     assert task.frontmatter.status == "needs-human"
+    assert task.frontmatter.human_question == "Which regression path should be covered?"
+    assert task.frontmatter.human_question_status == "open"
+    assert "Which regression path should be covered?" in task.body
     assert "Human instruction: Please add the focused regression test." in task.body
     assert "Please add the focused regression test." in run_text
     assert "Please add the focused regression test." in followups_text
+    assert any(call[:3] == ["set-status", "agent_activity", "Needs human"] for call in calls)
+    assert any(call[:4] == ["new-pane", "--type", "browser", "--direction"] and "file://" in " ".join(call) for call in calls)
     assert any(
         call[:5] == ["send", "--workspace", start_result.workspace_ref, "--surface", "surface:1"]
         and "Please add the focused regression test." in " ".join(call)
@@ -149,6 +159,44 @@ def test_engine_sends_followup_to_live_task(config, fake_git_repo, fake_cmux):
         call[:5] == ["send-key", "--workspace", start_result.workspace_ref, "--surface", "surface:1"] and "enter" in call
         for call in calls
     )
+
+
+def test_engine_requires_question_for_needs_human(config, fake_git_repo, fake_cmux):
+    init_command(config, open_obsidian=False)
+    write_registry(config, fake_git_repo)
+    created = new_task_command(config, repo="demo", title="Question required", status="ready")
+    start_task(config, created["id"])
+
+    with pytest.raises(ValueError, match="needs-human requires one human question"):
+        ConductorEngine(config).set_task_status(created["id"], "needs-human", actor="conductor", source="unit-test")
+
+
+def test_engine_send_resumes_from_needs_human_and_clears_question(config, fake_git_repo, fake_cmux):
+    init_command(config, open_obsidian=False)
+    write_registry(config, fake_git_repo)
+    created = new_task_command(config, repo="demo", title="Resume HITL", status="ready")
+    engine = ConductorEngine(config)
+    engine.start_task(created["id"])
+    engine.set_task_status(
+        created["id"],
+        "needs-human",
+        actor="conductor",
+        source="unit-test",
+        human_question="Should I update the generated fixture?",
+    )
+
+    result = engine.send_to_task(created["id"], "Yes, update the generated fixture.", status="running")
+
+    task = read_task_note(config, created["id"])
+    session = read_sessions(config)["sessions"][created["id"]]
+    assert result.sent is True
+    assert task.frontmatter.status == "running"
+    assert task.frontmatter.human_question_status == "answered"
+    assert task.frontmatter.human_question_answer == "Yes, update the generated fixture."
+    assert task.frontmatter.human_question_answered is not None
+    assert "# Human question\n\nNone." in task.abs_path.read_text(encoding="utf-8")
+    assert session["status"] == "running"
+    assert session.get("human_question") is None
 
 
 def test_engine_saves_followup_without_live_session(config, fake_git_repo, fake_cmux):

@@ -25,12 +25,16 @@ from .run_notes import append_run_followup, create_run_note, update_run_frontmat
 from .sessions import read_sessions, remove_session, upsert_session
 from .tasks import (
     append_task_log,
+    clear_task_human_question,
+    human_question_from_body,
     now_iso,
     read_all_task_notes,
     read_task_note,
+    set_task_human_question,
     status_from_column,
     status_to_column,
     update_task_frontmatter,
+    validate_human_question,
 )
 
 
@@ -73,12 +77,16 @@ class SendTaskResult:
     saved: bool
     sent: bool
     message: str
+    human_question: str | None = None
+    handoff_artifact: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "saved": self.saved,
             "sent": self.sent,
             "message": self.message,
+            "humanQuestion": self.human_question,
+            "handoffArtifact": self.handoff_artifact,
         }
 
 
@@ -96,6 +104,8 @@ class ConductorEngine:
         actor: str = "conductor",
         source: str = "engine",
         human: bool = False,
+        human_question: str | None = None,
+        human_response: str | None = None,
     ) -> StatusTransition:
         if status not in TASK_STATUSES:
             raise ValueError(f"Invalid status: {status}")
@@ -104,7 +114,27 @@ class ConductorEngine:
             raise ValueError("Only a human may mark a task done. Rerun with --human after review/merge.")
 
         before = read_task_note(self.config, task_id)
-        update_task_frontmatter(self.config, task_id, {"status": status})
+        timestamp = now_iso()
+        question = None
+        if status == "needs-human":
+            question = validate_human_question(human_question or human_question_from_body(before.body))
+            set_task_human_question(
+                self.config,
+                task_id,
+                question,
+                patch={"status": status},
+                opened_at=timestamp,
+            )
+        elif before.frontmatter.human_question_status == "open":
+            clear_task_human_question(
+                self.config,
+                task_id,
+                answer=human_response,
+                patch={"status": status},
+                answered_at=timestamp,
+            )
+        else:
+            update_task_frontmatter(self.config, task_id, {"status": status})
         after = read_task_note(self.config, task_id)
 
         board = self.read_board()
@@ -131,7 +161,12 @@ class ConductorEngine:
             actor=actor,
             source=source,
         )
-        self.update_live_session_for_status(task_id, status)
+        self.update_live_session_for_status(task_id, status, human_question=question)
+        if status == "needs-human" and question:
+            artifact = self.capture_human_handoff_artifact(task_id, question)
+            if artifact:
+                update_task_frontmatter(self.config, task_id, {"human_handoff_artifact": str(artifact)})
+                append_task_log(self.config, task_id, f"Needs-human handoff artifact captured: {artifact}")
         sync_project_notes(self.config)
 
         return StatusTransition(
@@ -250,7 +285,14 @@ class ConductorEngine:
             status=status,
         )
 
-    def send_to_task(self, task_id: str, message: str, *, status: str | None = None) -> SendTaskResult:
+    def send_to_task(
+        self,
+        task_id: str,
+        message: str,
+        *,
+        status: str | None = None,
+        human_question: str | None = None,
+    ) -> SendTaskResult:
         task = read_task_note(self.config, task_id)
         if task.frontmatter.current_run:
             append_run_followup(self.config, task.frontmatter.current_run, message)
@@ -260,16 +302,32 @@ class ConductorEngine:
                 handle.write(f"{now_iso()} {message}\n")
         append_task_log(self.config, task_id, f"Human instruction: {message}")
         session = read_sessions(self.config).get("sessions", {}).get(task_id)
+        sent = False
         if session and session.get("workspace_ref"):
-            cmux.send(session["workspace_ref"], message, surface_ref=session.get("surface_ref"))
-            cmux.send_enter(session["workspace_ref"], surface_ref=session.get("surface_ref"))
+            send_result = cmux.send(session["workspace_ref"], message, surface_ref=session.get("surface_ref"))
+            enter_result = cmux.send_enter(session["workspace_ref"], surface_ref=session.get("surface_ref"))
+            sent = bool(send_result.ok and enter_result.ok)
+            if not sent:
+                append_task_log(
+                    self.config,
+                    task_id,
+                    f"Human instruction could not be sent to cmux workspace {session.get('workspace_ref')}; saved only.",
+                )
         if status:
-            self.set_task_status(task_id, status)
+            self.set_task_status(
+                task_id,
+                status,
+                human_question=human_question,
+                human_response=message if status != "needs-human" else None,
+            )
+        updated = read_task_note(self.config, task_id)
         return SendTaskResult(
             task_id=task_id,
             saved=True,
-            sent=bool(session),
+            sent=sent,
             message=message,
+            human_question=updated.frontmatter.human_question if updated.frontmatter.human_question_status == "open" else None,
+            handoff_artifact=updated.frontmatter.human_handoff_artifact,
         )
 
     def sync_board(self, *, board_wins: bool = False) -> dict[str, int]:
@@ -342,20 +400,32 @@ class ConductorEngine:
             ),
         )
 
-    def update_live_session_for_status(self, task_id: str, status: str) -> None:
+    def update_live_session_for_status(self, task_id: str, status: str, *, human_question: str | None = None) -> None:
         session = read_sessions(self.config).get("sessions", {}).get(task_id)
         if not session or not session.get("workspace_ref"):
             return
         session["status"] = status
+        if status == "needs-human":
+            session["human_question"] = human_question
+        else:
+            session.pop("human_question", None)
         upsert_session(self.config, task_id, session)
         cmux.set_status(session["workspace_ref"], status)
+        if status == "needs-human" and human_question:
+            cmux.set_activity(session["workspace_ref"], "Needs human", icon="circle-alert", color="#dc2626")
+            cmux.set_progress(session["workspace_ref"], 0.50, label="Needs human")
+            cmux.log(f"Needs human: {human_question}", workspace_ref=session["workspace_ref"], source="conductor-hitl")
         self.notify_status_change(task_id, status, session["workspace_ref"])
+        if session.get("run_id") and status == "needs-human":
+            self.safe_update_run_frontmatter(session["run_id"], {"status": status})
         if session.get("run_id") and status in {"review-diff", "failed", "parked", "pr-opened", "done"}:
-            update_run_frontmatter(self.config, session["run_id"], {"status": status, "ended": now_iso()})
+            self.safe_update_run_frontmatter(session["run_id"], {"status": status, "ended": now_iso()})
 
     def notify_status_change(self, task_id: str, status: str, workspace_ref: str) -> None:
         if status == "needs-human":
-            cmux.notify(f"{task_id} needs human input", "The agent is waiting for a decision.", workspace_ref)
+            task = read_task_note(self.config, task_id)
+            body = task.frontmatter.human_question or "The agent is waiting for a decision."
+            cmux.notify(f"{task_id} needs human input", body, workspace_ref)
         elif status == "review-diff":
             cmux.notify(f"{task_id} ready for review", "Diff and test information are ready to inspect.", workspace_ref)
         elif status == "failed":
@@ -364,3 +434,54 @@ class ConductorEngine:
             task = read_task_note(self.config, task_id)
             body = task.frontmatter.pr_url or "Pull request opened."
             cmux.notify(f"{task_id} PR opened", body, workspace_ref)
+
+    def safe_update_run_frontmatter(self, run_id: str, patch: dict[str, Any]) -> None:
+        try:
+            update_run_frontmatter(self.config, run_id, patch)
+        except FileNotFoundError:
+            pass
+
+    def capture_human_handoff_artifact(self, task_id: str, question: str) -> Path | None:
+        task = read_task_note(self.config, task_id)
+        sessions = read_sessions(self.config).get("sessions", {})
+        session = sessions.get(task_id)
+        layout = cmux.CmuxWorkspaceLayout.from_session(session)
+        layout_for_open = None
+        if layout.workspace_ref:
+            try:
+                if cmux.workspace_exists(layout.workspace_ref):
+                    layout_for_open = layout
+            except Exception:
+                layout_for_open = None
+        artifact_path = cmux.durable_asset_root(
+            task.frontmatter.branch or task_id,
+            task_id,
+            fallback_root=task.frontmatter.repo_path or self.config.state_root.parent,
+        ) / f"{task_id}-needs-human.html"
+        evidence = {
+            "task": task_id,
+            "title": task.frontmatter.title,
+            "status": task.frontmatter.status,
+            "question": question,
+            "current_activity": task.frontmatter.current_activity,
+            "current_activity_detail": task.frontmatter.current_activity_detail,
+            "run": task.frontmatter.current_run,
+            "workspace_ref": task.frontmatter.workspace_ref,
+            "surface_ref": task.frontmatter.surface_ref,
+            "last_diff_stat": task.frontmatter.last_diff_stat,
+            "last_test_status": task.frontmatter.last_test_status,
+            "last_error": task.frontmatter.last_error,
+            "task_note": str(task.abs_path),
+            "next_actions": [
+                f"conductor send {task_id} \"<answer>\" --status running",
+                f"conductor mark {task_id} needs-revision",
+                f"conductor log {task_id} --tail 100",
+            ],
+        }
+        return cmux.capture_review_artifact(
+            artifact_path,
+            title=f"{task_id} needs human input",
+            evidence=evidence,
+            layout=layout_for_open,
+            policy=cmux.CmuxHITLPolicy.non_disruptive(),
+        )
